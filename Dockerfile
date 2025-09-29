@@ -8,7 +8,7 @@ ARG TARGETOS TARGETARCH
 RUN set -eu && \
     apk --no-cache add \
     git && \
-    git clone -b $VERSION_ARG https://github.com/linuxboot/fiano.git /src && \
+    git clone -b v$VERSION_ARG https://github.com/linuxboot/fiano.git /src && \
     rm -rf /tmp/* /var/cache/apk/*
 
 WORKDIR /src
