@@ -5,7 +5,7 @@ FROM --platform=$BUILDPLATFORM golang:1.21-alpine as builder
 ARG VERSION_ARG="0.0"
 ARG TARGETOS TARGETARCH
 
-RUN apt install git
+RUN apt-get install git
 RUN git clone https://github.com/linuxboot/fiano.git $VERSION_ARG
 WORKDIR /fiano
 
