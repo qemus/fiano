@@ -4,13 +4,15 @@
 </div>
 <div align="center">
   
-  [![Build](https://github.com/qemus/fiano/actions/workflows/build.yml/badge.svg)](https://github.com/qemus/fiano/)
-  [![Version](https://img.shields.io/github/v/release/qemus/fiano?label=version&sort=date&display_name=release&color=066da5)](https://github.com/qemus/fiano/releases)
-  [![Size](https://img.shields.io/badge/size-26.8_MB-steelblue?style=flat&color=066da5)](https://github.com/qemus/fiano/releases)
+[![Build]][build_url]
+[![Version]][tag_url]
+[![Size]][tag_url]
+[![Package]][pkg_url]
+[![Pulls]][hub_url]
 
 </div></h1>
 
-Pre-build binaries of [Fiano](https://github.com/linuxboot/fiano), a collection of Go-based tools for modifying UEFI firmware.
+Docker image of [Fiano](https://github.com/linuxboot/fiano), a tool for modifying UEFI firmware.
 
 ## UTK: Generic UEFI tool kit meant to handle rom images
 
@@ -60,3 +62,14 @@ utk winterfell/ save winterfell2.rom
 
 ## Stars 🌟
 [![Stars](https://starchart.cc/qemus/fiano.svg?variant=adaptive)](https://starchart.cc/qemus/fiano)
+
+[build_url]: https://github.com/qemus/fiano/
+[hub_url]: https://hub.docker.com/r/qemux/fiano/
+[tag_url]: https://hub.docker.com/r/qemux/fiano/tags
+[pkg_url]: https://github.com/qemus/fiano/pkgs/container/fiano
+
+[Build]: https://github.com/qemus/fiano/actions/workflows/build.yml/badge.svg
+[Size]: https://img.shields.io/docker/image-size/qemux/fiano/latest?color=066da5&label=size
+[Pulls]: https://img.shields.io/docker/pulls/qemux/fiano.svg?style=flat&label=pulls&logo=docker
+[Version]: https://img.shields.io/docker/v/qemux/fiano/latest?arch=amd64&sort=semver&color=066da5
+[Package]: https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fipitio.github.io%2Fbackage%2Fqemus%2Ffiano%2Ffiano.json&query=%24.downloads&logo=github&style=flat&color=066da5&label=pulls
