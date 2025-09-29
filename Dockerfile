@@ -11,7 +11,7 @@ RUN set -eu && \
     git clone https://github.com/linuxboot/fiano.git $VERSION_ARG && \
     rm -rf /tmp/* /var/cache/apk/*
     
-WORKDIR /fiano
+WORKDIR /$VERSION_ARG
 
 RUN go mod download
 
