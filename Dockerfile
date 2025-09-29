@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 
-FROM --platform=$BUILDPLATFORM golang:1.21-alpine as builder
+FROM --platform=$BUILDPLATFORM golang:1.21-alpine AS builder
 
 ARG VERSION_ARG="0.0"
 ARG TARGETOS TARGETARCH
 
 RUN set -eu && \
-    apk --no-cache add --no-install-recommends \
+    apk --no-cache add \
     git && \
     git clone https://github.com/linuxboot/fiano.git $VERSION_ARG && \
     rm -rf /tmp/* /var/cache/apk/*
