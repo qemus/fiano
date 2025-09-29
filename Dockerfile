@@ -13,12 +13,10 @@ RUN set -eu && \
     
 WORKDIR /$VERSION_ARG
 
-RUN go mod download
-
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -a -installsuffix cgo -o /fiano/utk .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -a -installsuffix cgo -o /$VERSION_ARG/utk .
 
 FROM scratch
 
-COPY --chmod=755 --from=builder /fiano/utk /utk.bin
+COPY --chmod=755 --from=builder /$VERSION_ARG/utk /utk.bin
 
 ENTRYPOINT ["/utk.bin"]
