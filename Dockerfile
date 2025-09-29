@@ -8,15 +8,15 @@ ARG TARGETOS TARGETARCH
 RUN set -eu && \
     apk --no-cache add \
     git && \
-    git clone https://github.com/linuxboot/fiano.git $VERSION_ARG && \
+    git clone https://github.com/linuxboot/fiano.git $VERSION_ARG /src && \
     rm -rf /tmp/* /var/cache/apk/*
-    
-WORKDIR /$VERSION_ARG
 
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -a -installsuffix cgo -o /$VERSION_ARG/utk .
+WORKDIR /src
+
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -a -installsuffix cgo -o /src/utk .
 
 FROM scratch
 
-COPY --chmod=755 --from=builder /$VERSION_ARG/utk /utk.bin
+COPY --chmod=755 --from=builder /src/utk /utk.bin
 
 ENTRYPOINT ["/utk.bin"]
