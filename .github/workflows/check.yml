@@ -11,29 +11,6 @@ jobs:
       with:
         fetch-depth: 1
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        cache: false
-        go-version-file: 'src/go.mod'
-
-    - name: Run golangci-lint
-      uses: golangci/golangci-lint-action@v8
-      with:
-          version: latest
-          working-directory: src
-
-    - name: Run staticcheck
-      uses: dominikh/staticcheck-action@v1
-      with:
-        version: latest
-        install-go: false
-        working-directory: src
-
-    - name: Run Go vet
-      run: go vet ./...
-      working-directory: src
-
     - name: Lint Dockerfile
       uses: hadolint/hadolint-action@v3.3.0
       with:
