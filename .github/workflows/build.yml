@@ -123,14 +123,6 @@ jobs:
           annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
             VERSION_ARG=${{ steps.meta.outputs.version }}
-      - 
-        name: Extract binary
-        if: env.exists == 'false'
-        uses: shrink/actions-docker-extract@v3
-        with:
-          image: ${{ secrets.DOCKERHUB_REPO }}:latest
-          path: "utk.bin"
-          destination: "output"
       -
         name: Create a release
         if: env.exists == 'false'
@@ -139,14 +131,6 @@ jobs:
           tag: "v${{ steps.meta.outputs.version }}"
           title: "v${{ steps.meta.outputs.version }}"
           token: ${{ secrets.REPO_ACCESS_TOKEN }}
-      -
-        name: Update release
-        if: env.exists == 'false'
-        uses: AButler/upload-release-assets@v3.0
-        with:
-          files: 'output/utk.bin'
-          release-tag: "v${{ steps.meta.outputs.version }}"
-          repo-token: ${{ secrets.REPO_ACCESS_TOKEN }}
       -
         name: Send mail
         if: env.exists == 'false'
