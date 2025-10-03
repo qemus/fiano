@@ -11,7 +11,7 @@ RUN set -eu && \
     git clone -b v$VERSION_ARG https://github.com/linuxboot/fiano.git /src && \
     rm -rf /tmp/* /var/cache/apk/*
 
-WORKDIR /src//cmds/utk
+WORKDIR /src/cmds/utk
 
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -a -installsuffix cgo -o /src/utk .
 
