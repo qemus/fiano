@@ -123,12 +123,14 @@ jobs:
           build-args: |
             VERSION_ARG=${{ steps.meta.outputs.version }}
       - 
+        name: Rename binaries
         if: env.exists == 'false'
         run: |
           #!/bin/bash
           set -eu
-          ls output
-          exit 33
+          mv output/linux_amd64/utk.bin output/utk_${{ steps.meta.outputs.version }}_amd64.bin
+          mv output/linux_arm64/utk.bin output/utk_${{ steps.meta.outputs.version }}_arm64.bin
+          rm -rf output/linux_amd64 && rm -rf output/linux_arm64
       -
         name: Create a release
         if: env.exists == 'false'
@@ -138,7 +140,7 @@ jobs:
           title: "v${{ steps.meta.outputs.version }}"
           token: ${{ secrets.REPO_ACCESS_TOKEN }}
       -
-        name: Add packages to release
+        name: Add binaries to release
         if: env.exists == 'false'
         uses: AButler/upload-release-assets@v3.0
         with:
