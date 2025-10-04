@@ -115,12 +115,20 @@ jobs:
           context: .
           push: true
           provenance: false
+          outputs: "type=local,dest=output"
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
             VERSION_ARG=${{ steps.meta.outputs.version }}
+      - 
+        if: env.exists == 'false'
+        run: |
+          #!/bin/bash
+          set -eu
+          ls output
+          exit 33
       -
         name: Create a release
         if: env.exists == 'false'
@@ -129,6 +137,14 @@ jobs:
           tag: "v${{ steps.meta.outputs.version }}"
           title: "v${{ steps.meta.outputs.version }}"
           token: ${{ secrets.REPO_ACCESS_TOKEN }}
+      -
+        name: Add packages to release
+        if: env.exists == 'false'
+        uses: AButler/upload-release-assets@v3.0
+        with:
+          files: 'output/*'
+          release-tag: "v${{ steps.meta.outputs.version }}"
+          repo-token: ${{ secrets.REPO_ACCESS_TOKEN }}
       -
         name: Send mail
         if: env.exists == 'false'
