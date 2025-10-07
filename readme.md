@@ -68,7 +68,7 @@ utk winterfell/ save winterfell2.rom
 [release_url]: https://github.com/qemus/fiano/releases
 
 [Build]: https://github.com/qemus/fiano/actions/workflows/build.yml/badge.svg
-[Size]: https://img.shields.io/docker/image-size/qemux/fiano/latest?color=066da5&label=size
+[Size]: https://img.shields.io/badge/size-2.1_MB-steelblue?style=flat&color=066da5
 [Pulls]: https://img.shields.io/docker/pulls/qemux/fiano.svg?style=flat&label=pulls&logo=docker
 [Version]: https://img.shields.io/docker/v/qemux/fiano/latest?arch=amd64&sort=semver&color=066da5
 [Package]: https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fipitio.github.io%2Fbackage%2Fqemus%2Ffiano%2Ffiano.json&query=%24.downloads&logo=github&style=flat&color=066da5&label=pulls
