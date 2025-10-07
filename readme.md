@@ -10,7 +10,7 @@
 
 </div></h1>
 
-Prebuilt binaries of [Fiano](https://github.com/linuxboot/fiano), a tool for modifying UEFI firmware.
+Prebuilt multi-platform binaries of [Fiano](https://github.com/linuxboot/fiano), a tool for modifying UEFI firmware.
 
 ## UTK: Generic UEFI tool kit meant to handle rom images
 
