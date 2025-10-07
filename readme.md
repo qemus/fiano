@@ -5,14 +5,12 @@
 <div align="center">
   
 [![Build]][build_url]
-[![Version]][tag_url]
-[![Size]][tag_url]
-[![Package]][pkg_url]
-[![Pulls]][hub_url]
+[![Version]][release_url]
+[![Size]][release_url]
 
 </div></h1>
 
-Docker image of [Fiano](https://github.com/linuxboot/fiano), a tool for modifying UEFI firmware.
+Prebuilt binaries of [Fiano](https://github.com/linuxboot/fiano), a tool for modifying UEFI firmware.
 
 ## UTK: Generic UEFI tool kit meant to handle rom images
 
@@ -67,6 +65,7 @@ utk winterfell/ save winterfell2.rom
 [hub_url]: https://hub.docker.com/r/qemux/fiano/
 [tag_url]: https://hub.docker.com/r/qemux/fiano/tags
 [pkg_url]: https://github.com/qemus/fiano/pkgs/container/fiano
+[release_url]: https://github.com/qemus/fiano/releases
 
 [Build]: https://github.com/qemus/fiano/actions/workflows/build.yml/badge.svg
 [Size]: https://img.shields.io/docker/image-size/qemux/fiano/latest?color=066da5&label=size
