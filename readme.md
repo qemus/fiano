@@ -59,7 +59,7 @@ utk winterfell/ save winterfell2.rom
 ```
 
 ## Stars 🌟
-[![Stargazers](https://raw.githubusercontent.com/star-stats/stars/refs/heads/data/charts/qemus-fiano.svg)](https://github.com/dobtc/qemus/fiano)
+[![Stargazers](https://raw.githubusercontent.com/star-stats/stars/refs/heads/data/charts/qemus-fiano.svg)](https://github.com/qemus/fiano/stargazers)
 
 [build_url]: https://github.com/qemus/fiano/
 [release_url]: https://github.com/qemus/fiano/releases
