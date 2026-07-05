@@ -12,6 +12,15 @@
 
 Prebuilt multi-platform binaries of [Fiano](https://github.com/linuxboot/fiano), a tool for modifying UEFI firmware.
 
+## Features ✨
+
+- Provides prebuilt Fiano binaries
+- Includes `utk` for modifying UEFI firmware images
+- Supports inspecting firmware contents in table or JSON format
+- Supports extracting and rebuilding firmware images
+- Supports inserting, removing, dumping, and replacing EFI files
+- Works on multiple platforms
+
 ## UTK: Generic UEFI tool kit meant to handle rom images
 
 Example usage:
