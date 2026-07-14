@@ -1,4 +1,5 @@
 name: Build
+
 on:
   workflow_dispatch:
   schedule:
@@ -17,60 +18,192 @@ jobs:
       packages: write
       contents: read
     steps:
-      - 
-        name: Run graphql query to get tag
+      -
+        name: Retrieve latest tags
         uses: octokit/graphql-action@v2.x
-        id: latest_tag
+        id: tags
         with:
           variables: |
             repo: ${{ github.event.repository.name }}
             owner: linuxboot
           query: |
-            query tag($owner: String!, $repo: String!) {
+            query tags($owner: String!, $repo: String!) {
               repository(owner: $owner, name: $repo) {
-                refs(refPrefix: "refs/tags/", last: 1, orderBy: {field: TAG_COMMIT_DATE, direction: ASC}) {
+                refs(
+                  refPrefix: "refs/tags/"
+                  last: 2
+                  orderBy: {
+                    field: TAG_COMMIT_DATE
+                    direction: ASC
+                  }
+                ) {
                   edges {
                     node {
                       name
-               } } } } }
+                    }
+                  }
+                }
+              }
+            }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - 
-        name: Parse tag from query output
+      -
+        name: Parse tags
         run: |
-          #!/bin/bash
-          latest_tag=$(echo '${{ steps.latest_tag.outputs.data }}' | jq '.repository.refs.edges[][].name' -r)
-          [ -z "$latest_tag" ] && echo "Tag not found!" && exit 1
-          [[ "$latest_tag" == "null" ]] && echo "Tag not found!" && exit 1
-          [[ "$latest_tag" = v* ]] && latest_tag="${latest_tag:1}"
-          echo "Found tag: \"${latest_tag}\"" 
-          echo "latest_tag=$latest_tag" >> $GITHUB_ENV
-      - 
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          mapfile -t tags < <(
+            jq -er \
+              '.repository.refs.edges[].node.name' \
+              <<< '${{ steps.tags.outputs.data }}'
+          )
+
+          count=${#tags[@]}
+
+          if [ "$count" -eq 0 ]; then
+            echo "ERROR: No upstream tags were found." >&2
+            exit 1
+          fi
+
+          latest_index=$((count - 1))
+          latest_branch=${tags[$latest_index]}
+          latest_tag=${latest_branch#v}
+
+          previous_branch=""
+
+          if [ "$count" -gt 1 ]; then
+            previous_index=$((count - 2))
+            previous_branch=${tags[$previous_index]}
+          fi
+
+          if [ -z "$latest_tag" ]; then
+            echo "ERROR: Tag not found." >&2
+            exit 1
+          fi
+
+          echo "Found tag: \"$latest_tag\""
+          echo "Upstream tag: \"$latest_branch\""
+
+          if [ -n "$previous_branch" ]; then
+            echo "Previous upstream tag: \"$previous_branch\""
+          fi
+
+          {
+            echo "latest_tag=$latest_tag"
+            echo "latest_branch=$latest_branch"
+            echo "previous_branch=$previous_branch"
+          } >> "$GITHUB_ENV"
+      -
         name: Check if the tag exists locally
         uses: action-pack/tag-exists@v1
         id: checkTag
-        with: 
-          tag: 'v${{ env.latest_tag }}'         
+        with:
+          tag: 'v${{ env.latest_tag }}'
       -
         name: Finish when found
         run: |
-          #!/bin/bash        
-          val="${{ steps.checkTag.outputs.exists }}"
-          echo "exists=${val}" >> $GITHUB_ENV
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          echo "exists=${{ steps.checkTag.outputs.exists }}" >> "$GITHUB_ENV"
       -
         name: Checkout
         if: env.exists == 'false'
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - 
+      -
+        name: Generate release notes
+        if: env.exists == 'false'
+        id: notes
+        env:
+          LATEST_BRANCH: ${{ env.latest_branch }}
+          PREVIOUS_BRANCH: ${{ env.previous_branch }}
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          repository="https://github.com/linuxboot/${{ github.event.repository.name }}.git"
+          source="/tmp/fiano"
+          output="/tmp/release-notes.md"
+
+          latest_tag=${LATEST_BRANCH#v}
+          previous_tag=${PREVIOUS_BRANCH#v}
+
+          rm -rf "$source"
+
+          git clone \
+            --quiet \
+            --filter=blob:none \
+            --no-checkout \
+            "$repository" \
+            "$source"
+
+          if ! git -C "$source" rev-parse \
+            --verify \
+            --quiet \
+            "refs/tags/$LATEST_BRANCH^{commit}" \
+            >/dev/null; then
+            echo "ERROR: Upstream tag not found: $LATEST_BRANCH" >&2
+            exit 1
+          fi
+
+          {
+            echo "## Changes"
+            echo
+            echo "**$latest_tag**"
+
+            if [ -n "$PREVIOUS_BRANCH" ]; then
+              if ! git -C "$source" rev-parse \
+                --verify \
+                --quiet \
+                "refs/tags/$PREVIOUS_BRANCH^{commit}" \
+                >/dev/null; then
+                echo "ERROR: Previous upstream tag not found: $PREVIOUS_BRANCH" >&2
+                exit 1
+              fi
+
+              echo
+              echo "Changes since \`$previous_tag\`:"
+              echo
+
+              changes=$(
+                git -C "$source" log \
+                  --no-merges \
+                  --reverse \
+                  --format='- %s' \
+                  "$PREVIOUS_BRANCH..$LATEST_BRANCH"
+              )
+
+              if [ -n "$changes" ]; then
+                echo "$changes"
+              else
+                echo "- No changes were listed."
+              fi
+            else
+              echo
+              echo "- Initial packaged release."
+            fi
+          } > "$output"
+
+          cat "$output"
+
+          delimiter="RELEASE_NOTES_$(date +%s%N)"
+
+          {
+            echo "release_notes<<$delimiter"
+            cat "$output"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+      -
         name: Lint Dockerfile
         if: env.exists == 'false'
         uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: Dockerfile
-          ignore: DL3008,DL3059,DL3018 
-          failure-threshold: warning          
+          ignore: DL3008,DL3059,DL3018
+          failure-threshold: warning
       -
         name: Docker metadata
         id: meta
@@ -88,7 +221,7 @@ jobs:
             org.opencontainers.image.title=${{ vars.NAME }}
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
-      - 
+      -
         name: Set up Docker Buildx
         if: env.exists == 'false'
         uses: docker/setup-buildx-action@v4
@@ -100,34 +233,46 @@ jobs:
           context: .
           push: false
           provenance: false
-          outputs: "type=local,dest=output"
+          outputs: type=local,dest=output
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
             VERSION_ARG=${{ steps.meta.outputs.version }}
-      - 
+      -
         name: Rename binaries
         if: env.exists == 'false'
         run: |
-          #!/bin/bash
-          set -eu
-          mv output/linux_amd64/utk.bin output/utk_${{ steps.meta.outputs.version }}_amd64.bin
-          mv output/linux_arm64/utk.bin output/utk_${{ steps.meta.outputs.version }}_arm64.bin
-          rm -rf output/linux_amd64 && rm -rf output/linux_arm64
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          version="${{ steps.meta.outputs.version }}"
+
+          mv \
+            output/linux_amd64/utk.bin \
+            "output/utk_${version}_amd64.bin"
+
+          mv \
+            output/linux_arm64/utk.bin \
+            "output/utk_${version}_arm64.bin"
+
+          rm -rf \
+            output/linux_amd64 \
+            output/linux_arm64
       -
         name: Create a release
         if: env.exists == 'false'
         uses: action-pack/github-release@v2
         with:
+          body: ${{ steps.notes.outputs.release_notes }}
           tag: "v${{ steps.meta.outputs.version }}"
           title: "v${{ steps.meta.outputs.version }}"
           token: ${{ secrets.REPO_ACCESS_TOKEN }}
       -
         name: Add binaries to release
         if: env.exists == 'false'
-        uses: AButler/upload-release-assets@v4.0.0
+        uses: AButler/upload-release-assets@v4.0
         with:
           files: 'output/*'
           release-tag: "v${{ steps.meta.outputs.version }}"
@@ -137,11 +282,11 @@ jobs:
         if: env.exists == 'false'
         uses: action-pack/send-mail@v1
         with:
-          to: ${{secrets.MAILTO}}
-          from: Github Actions <${{secrets.MAILTO}}>
-          connection_url: ${{secrets.MAIL_CONNECTION}}
+          to: ${{ secrets.MAILTO }}
+          from: Github Actions <${{ secrets.MAILTO }}>
+          connection_url: ${{ secrets.MAIL_CONNECTION }}
           subject: Build of ${{ github.event.repository.name }} v${{ steps.meta.outputs.version }} completed
           body: |
-              The build job of ${{ github.event.repository.name }} v${{ steps.meta.outputs.version }} was completed successfully! 
-              
-              See https://github.com/${{ github.repository }}/actions for more information.
+            The build job of ${{ github.event.repository.name }} v${{ steps.meta.outputs.version }} was completed successfully!
+
+            See https://github.com/${{ github.repository }}/actions for more information.
