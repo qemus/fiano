@@ -64,7 +64,7 @@ jobs:
       FIANO_VERSION: "1.2.0"
       GO_VERSION: "1.25.7"
 
-      RESULTS: ${{ runner.temp }}/fiano-results
+      RESULTS: ${{ github.workspace }}/results
 
       RUNS: ${{ inputs.runs || '10' }}
       LZMA_LEVEL: ${{ inputs.lzma_level || '1' }}
@@ -2324,7 +2324,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fiano-rom-comparison-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/fiano-results
+          path: ${{ github.workspace }}/results
           if-no-files-found: warn
           retention-days: 14
           compression-level: 6
