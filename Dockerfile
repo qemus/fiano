@@ -5,10 +5,13 @@ FROM --platform=$BUILDPLATFORM golang:1.25.7-alpine AS builder
 ARG VERSION_ARG="0.0"
 ARG TARGETOS TARGETARCH
 
+COPY lzma-level.patch /tmp/lzma-level.patch
+
 RUN set -eu && \
     apk --no-cache add \
     git && \
     git clone -b v$VERSION_ARG https://github.com/linuxboot/fiano.git /src && \
+    git -C /src apply /tmp/lzma-level.patch && \
     rm -rf /tmp/* /var/cache/apk/*
 
 WORKDIR /src/cmds/utk
