@@ -73,10 +73,14 @@ jobs:
       RUN_BOOT_TEST: ${{ github.event_name != 'workflow_dispatch' || inputs.boot_test }}
 
     steps:
+      - name: Checkout project
+        uses: actions/checkout@v7
+
       - name: Initialize result directory
         run: |
           set -Eeuo pipefail
 
+          rm -rf "$RESULTS"
           mkdir -p "$RESULTS"
 
           {
@@ -89,9 +93,6 @@ jobs:
             echo "- Commit: \`$GITHUB_SHA\`"
             echo "- Run: \`$GITHUB_RUN_ID\`"
           } > "$RESULTS/workflow-start.md"
-
-      - name: Checkout project
-        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
