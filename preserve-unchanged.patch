@@ -1,0 +1,140 @@
+diff --git a/pkg/uefi/biosregion.go b/pkg/uefi/biosregion.go
+--- a/pkg/uefi/biosregion.go
++++ b/pkg/uefi/biosregion.go
+@@ -51,8 +51,9 @@ type BIOSRegion struct {
+ 	Length      uint64
+ 	// This is a pointer to the FlashRegion struct laid out in the ifd.
+ 	FRegion    *FlashRegion
+-	RegionType FlashRegionType
++	RegionType FlashRegionType
++	Modified   bool `json:"-"`
+ }
+ 
+ // Type returns the flash region type.
+diff --git a/pkg/uefi/file.go b/pkg/uefi/file.go
+--- a/pkg/uefi/file.go
++++ b/pkg/uefi/file.go
+@@ -252,9 +252,10 @@ type File struct {
+ 
+ 	//Metadata for extraction and recovery
+ 	buf         []byte
+ 	ExtractPath string
+ 	DataOffset  uint64
++	Modified    bool `json:"-"`
+ }
+ 
+ // Buf returns the buffer.
+diff --git a/pkg/uefi/firmwarevolume.go b/pkg/uefi/firmwarevolume.go
+--- a/pkg/uefi/firmwarevolume.go
++++ b/pkg/uefi/firmwarevolume.go
+@@ -105,8 +105,9 @@ type FirmwareVolume struct {
+ 	FVOffset    uint64 // Byte offset from start of BIOS region.
+ 	ExtractPath string
+ 	Resizable   bool   // Determines if this FV is resizable.
+ 	FreeSpace   uint64 `json:"-"`
++	Modified    bool   `json:"-"`
+ }
+ 
+ // Buf returns the buffer.
+diff --git a/pkg/uefi/section.go b/pkg/uefi/section.go
+--- a/pkg/uefi/section.go
++++ b/pkg/uefi/section.go
+@@ -204,7 +204,8 @@ type Section struct {
+ 	DepEx []DepExOp `json:",omitempty"`
+ 
+ 	// Encapsulated firmware
+ 	Encapsulated []*TypedFirmware `json:",omitempty"`
++	Modified     bool             `json:"-"`
+ }
+ 
+ // String returns the String value of the section if it makes sense,
+diff --git a/pkg/visitors/insert.go b/pkg/visitors/insert.go
+--- a/pkg/visitors/insert.go
++++ b/pkg/visitors/insert.go
+@@ -237,6 +237,7 @@ func (v *Insert) Visit(f uefi.Firmware) error {
+ 					f.Files = append(f.Files[:i], append([]*uefi.File{v.NewFile}, f.Files[i:]...)...)
+ 				case InsertTypeReplaceFFS:
+ 					f.Files = append(f.Files[:i], append([]*uefi.File{v.NewFile}, f.Files[i+1:]...)...)
++					f.Modified = true
+ 				}
+ 				return nil
+ 			}
+diff --git a/pkg/visitors/assemble.go b/pkg/visitors/assemble.go
+--- a/pkg/visitors/assemble.go
++++ b/pkg/visitors/assemble.go
+@@ -36,6 +36,55 @@ func (v *Assemble) Run(f uefi.Firmware) error {
+ 	return f.Apply(v)
+ }
+ 
++// propagateModified marks every ancestor of a modified firmware object as
++// modified. Clean siblings retain their original encoded buffers.
++func propagateModified(f uefi.Firmware) bool {
++	switch f := f.(type) {
++	case *uefi.BIOSRegion:
++		for _, child := range f.Elements {
++			if propagateModified(child.Value) {
++				f.Modified = true
++			}
++		}
++		return f.Modified
++
++	case *uefi.FirmwareVolume:
++		for _, child := range f.Files {
++			if propagateModified(child) {
++				f.Modified = true
++			}
++		}
++		return f.Modified
++
++	case *uefi.File:
++		for _, child := range f.Sections {
++			if propagateModified(child) {
++				f.Modified = true
++			}
++		}
++		return f.Modified
++
++	case *uefi.Section:
++		for _, child := range f.Encapsulated {
++			if propagateModified(child.Value) {
++				f.Modified = true
++			}
++		}
++		return f.Modified
++
++	default:
++		return false
++	}
++}
++
++func isModified(f uefi.Firmware) bool {
++	switch f := f.(type) {
++	case *uefi.BIOSRegion:
++		return f.Modified
++	case *uefi.FirmwareVolume:
++		return f.Modified
++	case *uefi.File:
++		return f.Modified
++	case *uefi.Section:
++		return f.Modified
++	default:
++		return true
++	}
++}
++
+ // Visit applies the Assemble visitor to any Firmware type.
+ func (v *Assemble) Visit(f uefi.Firmware) error {
+ 	var err error
+@@ -55,6 +104,12 @@ func (v *Assemble) Visit(f uefi.Firmware) error {
+ 		return err
+ 	}
+ 
++	propagateModified(f)
++
++	if !isModified(f) {
++		return nil
++	}
++
+ 	switch f := f.(type) {
+ 
+ 	case *uefi.FirmwareVolume:
