@@ -3,14 +3,14 @@
 <a href="https://github.com/qemus/fiano"><img src="https://raw.githubusercontent.com/qemus/fiano/master/.github/logo.svg" title="Logo" style="max-width:100%;" width="128" /></a>
 </div>
 <div align="center">
-  
+
 [![Build]][build_url]
 [![Version]][release_url]
 [![Size]][release_url]
 
 </div></h1>
 
-Prebuilt multi-platform binaries of [Fiano](https://github.com/linuxboot/fiano), a tool for modifying UEFI firmware.
+A maintained fork of [Fiano](https://github.com/linuxboot/fiano) that provides prebuilt multi-platform binaries and additional features for modifying UEFI firmware.
 
 ## Features ✨
 
@@ -19,13 +19,13 @@ Prebuilt multi-platform binaries of [Fiano](https://github.com/linuxboot/fiano),
 - Supports inspecting firmware contents in table or JSON format
 - Supports extracting and rebuilding firmware images
 - Supports inserting, removing, dumping, and replacing EFI files
-- Works on multiple platforms
+- Supports configurable LZMA compression levels
 
-## UTK: Generic UEFI tool kit meant to handle rom images
+## UTK: Generic UEFI tool kit meant to handle ROM images
 
 Example usage:
 
-```
+```bash
 # For a comprehensive list of commands
 utk -h
 
@@ -35,25 +35,25 @@ utk winterfell.rom table
 # Summarize everything in JSON:
 utk winterfell.rom json
 
-# List information about a single file in JSON (using regex):
+# List information about a single file in JSON using a regular expression:
 utk winterfell.rom find Shell
 
-# Dump an EFI file to an ffs
+# Dump an EFI file to an FFS file:
 utk winterfell.rom dump DxeCore dxecore.ffs
 
-# Insert an EFI file into an FV near another Dxe
+# Insert an EFI file into an FV near another DXE:
 utk winterfell.rom insert_before Shell dxecore.ffs save inserted.rom
 utk winterfell.rom insert_after Shell dxecore.ffs save inserted.rom
 
-# Insert an EFI file into an FV at the front or the end
-# "Shell" is just a means of specifying the FV that contains Shell
+# Insert an EFI file into an FV at the front or the end:
+# "Shell" specifies the FV containing Shell.
 utk winterfell.rom insert_front Shell dxecore.ffs save inserted.rom
 utk winterfell.rom insert_end Shell dxecore.ffs save inserted.rom
 
-# Remove a file and pad the firmware volume to maintain offsets for the following files
+# Remove a file and pad the firmware volume to preserve offsets:
 utk winterfell.rom remove_pad Shell save removed.rom
 
-# Remove two files by their GUID without padding and replace shell with Linux:
+# Remove two files by GUID and replace Shell with Linux:
 utk winterfell.rom \
   remove 12345678-9abc-def0-1234-567890abcdef \
   remove 23830293-3029-3823-0922-328328330939 \
@@ -63,11 +63,12 @@ utk winterfell.rom \
 # Extract everything into a directory:
 utk winterfell.rom extract winterfell/
 
-# Re-assemble the directory into an image:
+# Reassemble the directory into an image:
 utk winterfell/ save winterfell2.rom
 ```
 
 ## Stars 🌟
+
 [![Stargazers](https://raw.githubusercontent.com/star-stats/stars/refs/heads/data/charts/qemus-fiano.svg)](https://github.com/qemus/fiano/stargazers)
 
 [build_url]: https://github.com/qemus/fiano/
