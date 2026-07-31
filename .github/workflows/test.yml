@@ -1,0 +1,2133 @@
+name: Fiano ROM comparison
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - ".github/workflows/test.yml"
+      - "Dockerfile"
+      - "lzma-level.patch"
+      - "preserve-unchanged.patch"
+
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Number of benchmark runs per operation
+        required: false
+        default: "10"
+        type: string
+
+      lzma_level:
+        description: LZMA level used for the primary comparison
+        required: false
+        default: "1"
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+
+      compression_matrix:
+        description: Test system and internal LZMA at levels 0 through 9
+        required: false
+        default: true
+        type: boolean
+
+      boot_test:
+        description: Run a QEMU TCG boot smoke test
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fiano-rom-comparison-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    name: Build and compare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    env:
+      FIANO_VERSION: "1.2.0"
+      GO_VERSION: "1.25.7"
+      RESULTS: ${{ github.workspace }}/results
+      RUNS: ${{ inputs.runs || '10' }}
+      LZMA_LEVEL: ${{ inputs.lzma_level || '1' }}
+      RUN_MATRIX: ${{ github.event_name != 'workflow_dispatch' || inputs.compression_matrix }}
+      RUN_BOOT_TEST: ${{ github.event_name != 'workflow_dispatch' || inputs.boot_test }}
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v7
+
+      - name: Initialize result directory
+        run: |
+          set -Eeuo pipefail
+
+          rm -rf "$RESULTS"
+          mkdir -p "$RESULTS"
+
+          {
+            echo "# Fiano ROM comparison"
+            echo
+            echo "The workflow started successfully."
+            echo
+            echo "- Repository: \`$GITHUB_REPOSITORY\`"
+            echo "- Ref: \`$GITHUB_REF\`"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Run: \`$GITHUB_RUN_ID\`"
+          } > "$RESULTS/workflow-start.md"
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.7"
+          cache: false
+
+      - name: Install test tools
+        run: |
+          set -Eeuo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 \
+            time \
+            xz-utils
+
+      - name: Validate project and inputs
+        run: |
+          set -Eeuo pipefail
+
+          if [[ ! "$RUNS" =~ ^[0-9]+$ ]] || (( RUNS < 1 || RUNS > 50 )); then
+            echo "RUNS must be an integer from 1 through 50." >&2
+            exit 1
+          fi
+
+          if [[ ! "$LZMA_LEVEL" =~ ^[0-9]$ ]]; then
+            echo "LZMA_LEVEL must be from 0 through 9." >&2
+            exit 1
+          fi
+
+          for file in \
+            Dockerfile \
+            lzma-level.patch \
+            preserve-unchanged.patch; do
+
+            if [[ ! -s "$file" ]]; then
+              echo "Required project file is missing or empty: $file" >&2
+              exit 1
+            fi
+          done
+
+          grep -Fq 'golang:1.25.7-alpine' Dockerfile
+          grep -Fq 'git clone -b "v$VERSION_ARG"' Dockerfile
+          grep -Fq 'lzma-level' lzma-level.patch
+          grep -Fq 'propagateModified' preserve-unchanged.patch
+
+          {
+            echo "go_version=$GO_VERSION"
+            echo "fiano_version=$FIANO_VERSION"
+            echo "runs=$RUNS"
+            echo "lzma_level=$LZMA_LEVEL"
+            echo "compression_matrix=$RUN_MATRIX"
+            echo "boot_test=$RUN_BOOT_TEST"
+          } > "$RESULTS/configuration.txt"
+
+      - name: Create both Fiano source variants
+        run: |
+          set -Eeuo pipefail
+
+          UPSTREAM_SOURCE="$RUNNER_TEMP/fiano-upstream"
+          BASELINE_SOURCE="$RUNNER_TEMP/fiano-lzma-only"
+          CANDIDATE_SOURCE="$RUNNER_TEMP/fiano-lzma-preserve"
+
+          rm -rf \
+            "$UPSTREAM_SOURCE" \
+            "$BASELINE_SOURCE" \
+            "$CANDIDATE_SOURCE"
+
+          git clone \
+            --branch "v$FIANO_VERSION" \
+            --depth 1 \
+            https://github.com/linuxboot/fiano.git \
+            "$UPSTREAM_SOURCE"
+
+          git clone \
+            --local \
+            --no-hardlinks \
+            "$UPSTREAM_SOURCE" \
+            "$BASELINE_SOURCE"
+
+          git clone \
+            --local \
+            --no-hardlinks \
+            "$UPSTREAM_SOURCE" \
+            "$CANDIDATE_SOURCE"
+
+          git -C "$BASELINE_SOURCE" apply \
+            --check \
+            "$GITHUB_WORKSPACE/lzma-level.patch"
+
+          git -C "$BASELINE_SOURCE" apply \
+            "$GITHUB_WORKSPACE/lzma-level.patch"
+
+          git -C "$CANDIDATE_SOURCE" apply \
+            --check \
+            "$GITHUB_WORKSPACE/lzma-level.patch"
+
+          git -C "$CANDIDATE_SOURCE" apply \
+            "$GITHUB_WORKSPACE/lzma-level.patch"
+
+          git -C "$CANDIDATE_SOURCE" apply \
+            --recount \
+            --check \
+            "$GITHUB_WORKSPACE/preserve-unchanged.patch"
+
+          git -C "$CANDIDATE_SOURCE" apply \
+            --recount \
+            "$GITHUB_WORKSPACE/preserve-unchanged.patch"
+
+          grep -Fq \
+            'lzma-level' \
+            "$BASELINE_SOURCE/pkg/compression/compression.go"
+
+          if grep -R -Fq \
+            'propagateModified' \
+            "$BASELINE_SOURCE/pkg"; then
+
+            echo "The preservation patch is present in the baseline source." >&2
+            exit 1
+          fi
+
+          grep -Fq \
+            'lzma-level' \
+            "$CANDIDATE_SOURCE/pkg/compression/compression.go"
+
+          grep -Fq \
+            'propagateModified' \
+            "$CANDIDATE_SOURCE/pkg/visitors/assemble.go"
+
+          mkdir -p \
+            "$RESULTS/source" \
+            "$RESULTS/build" \
+            "$RESULTS/bin"
+
+          git -C "$BASELINE_SOURCE" diff \
+            > "$RESULTS/source/lzma-only.diff"
+
+          git -C "$CANDIDATE_SOURCE" diff \
+            > "$RESULTS/source/lzma-preserve.diff"
+
+          git -C "$BASELINE_SOURCE" diff --check
+          git -C "$CANDIDATE_SOURCE" diff --check
+
+          {
+            echo "## Upstream commit"
+            git -C "$UPSTREAM_SOURCE" rev-parse HEAD
+
+            echo
+            echo "## Baseline changes"
+            git -C "$BASELINE_SOURCE" diff --stat
+
+            echo
+            echo "## Candidate changes"
+            git -C "$CANDIDATE_SOURCE" diff --stat
+          } | tee "$RESULTS/source/source-state.txt"
+
+          {
+            echo "UPSTREAM_SOURCE=$UPSTREAM_SOURCE"
+            echo "BASELINE_SOURCE=$BASELINE_SOURCE"
+            echo "CANDIDATE_SOURCE=$CANDIDATE_SOURCE"
+            echo "BASELINE_BIN=$RESULTS/bin/utk-lzma-only"
+            echo "CANDIDATE_BIN=$RESULTS/bin/utk-lzma-preserve"
+            echo "VERIFY_FFS_BIN=$RESULTS/bin/verify-ffs"
+          } >> "$GITHUB_ENV"
+
+      - name: Download Go dependencies
+        run: |
+          set -Eeuo pipefail
+
+          (
+            cd "$BASELINE_SOURCE"
+            go mod download
+          )
+
+          (
+            cd "$CANDIDATE_SOURCE"
+            go mod download
+          )
+
+      - name: Build UTK variants and exact FFS verifier
+        run: |
+          set -Eeuo pipefail
+
+          build_variant() {
+            local name="$1"
+            local source="$2"
+            local output="$3"
+
+            (
+              cd "$source/cmds/utk"
+
+              /usr/bin/time \
+                --output="$RESULTS/build/${name}.time" \
+                --format=$'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kb=%M' \
+                env \
+                  CGO_ENABLED=0 \
+                  GOOS=linux \
+                  GOARCH=amd64 \
+                  GOTOOLCHAIN=local \
+                  go build \
+                    -a \
+                    -trimpath \
+                    -installsuffix cgo \
+                    -o "$output" \
+                    .
+            )
+          }
+
+          go version \
+            | tee "$RESULTS/build/go-version.txt"
+
+          build_variant \
+            "lzma-only" \
+            "$BASELINE_SOURCE" \
+            "$BASELINE_BIN"
+
+          build_variant \
+            "lzma-preserve" \
+            "$CANDIDATE_SOURCE" \
+            "$CANDIDATE_BIN"
+
+          VERIFY_SOURCE="$CANDIDATE_SOURCE/cmds/verify-ffs"
+          mkdir -p "$VERIFY_SOURCE"
+
+          cat > "$VERIFY_SOURCE/main.go" <<'GO'
+          package main
+
+          import (
+          	"bytes"
+          	"crypto/sha256"
+          	"fmt"
+          	"os"
+
+          	"github.com/linuxboot/fiano/pkg/uefi"
+          	"github.com/linuxboot/fiano/pkg/visitors"
+          )
+
+          func fatalf(format string, args ...interface{}) {
+          	fmt.Fprintf(os.Stderr, format+"\n", args...)
+          	os.Exit(1)
+          }
+
+          func main() {
+          	if len(os.Args) != 3 {
+          		fmt.Fprintf(
+          			os.Stderr,
+          			"usage: %s EXPECTED_FFS FIRMWARE\n",
+          			os.Args[0],
+          		)
+          		os.Exit(2)
+          	}
+
+          	expectedPath := os.Args[1]
+          	firmwarePath := os.Args[2]
+
+          	expectedData, err := os.ReadFile(expectedPath)
+          	if err != nil {
+          		fatalf("read expected FFS: %v", err)
+          	}
+
+          	expected, err := uefi.NewFile(expectedData)
+          	if err != nil {
+          		fatalf("parse expected FFS: %v", err)
+          	}
+          	if expected == nil {
+          		fatalf("expected FFS parsed as free space")
+          	}
+
+          	firmwareData, err := os.ReadFile(firmwarePath)
+          	if err != nil {
+          		fatalf("read firmware: %v", err)
+          	}
+
+          	root, err := uefi.Parse(firmwareData)
+          	if err != nil {
+          		fatalf("parse firmware: %v", err)
+          	}
+
+          	match, err := visitors.FindExactlyOne(
+          		root,
+          		visitors.FindFileGUIDPredicate(expected.Header.GUID),
+          	)
+          	if err != nil {
+          		fatalf("find replacement FFS: %v", err)
+          	}
+
+          	actual, ok := match.(*uefi.File)
+          	if !ok {
+          		fatalf(
+          			"matched object has type %T, expected *uefi.File",
+          			match,
+          		)
+          	}
+
+          	if !bytes.Equal(actual.Buf(), expectedData) {
+          		expectedHash := sha256.Sum256(expectedData)
+          		actualHash := sha256.Sum256(actual.Buf())
+
+          		fatalf(
+          			"FFS differs: expected size=%d sha256=%x, actual size=%d sha256=%x",
+          			len(expectedData),
+          			expectedHash,
+          			len(actual.Buf()),
+          			actualHash,
+          		)
+          	}
+
+          	hash := sha256.Sum256(actual.Buf())
+          	fmt.Printf(
+          		"exact FFS match: guid=%s size=%d sha256=%x\n",
+          		actual.Header.GUID.String(),
+          		len(actual.Buf()),
+          		hash,
+          	)
+          }
+          GO
+
+          (
+            cd "$CANDIDATE_SOURCE"
+
+            env \
+              CGO_ENABLED=0 \
+              GOOS=linux \
+              GOARCH=amd64 \
+              GOTOOLCHAIN=local \
+              go build \
+                -trimpath \
+                -o "$VERIFY_FFS_BIN" \
+                ./cmds/verify-ffs
+          )
+
+          chmod +x \
+            "$BASELINE_BIN" \
+            "$CANDIDATE_BIN" \
+            "$VERIFY_FFS_BIN"
+
+          {
+            echo "## Binary hashes"
+            sha256sum \
+              "$BASELINE_BIN" \
+              "$CANDIDATE_BIN" \
+              "$VERIFY_FFS_BIN"
+
+            echo
+            echo "## Binary sizes"
+            stat \
+              --printf='%n %s bytes\n' \
+              "$BASELINE_BIN" \
+              "$CANDIDATE_BIN" \
+              "$VERIFY_FFS_BIN"
+
+            echo
+            echo "## LZMA-only binary metadata"
+            go version -m "$BASELINE_BIN"
+
+            echo
+            echo "## LZMA and preservation binary metadata"
+            go version -m "$CANDIDATE_BIN"
+
+            echo
+            echo "## Exact FFS verifier metadata"
+            go version -m "$VERIFY_FFS_BIN"
+          } | tee "$RESULTS/build/binaries.txt"
+
+      - name: Run focused Go tests
+        run: |
+          set -Eeuo pipefail
+
+          (
+            cd "$BASELINE_SOURCE"
+
+            go test \
+              ./pkg/compression \
+              ./pkg/visitors
+          ) 2>&1 | tee "$RESULTS/build/lzma-only-tests.log"
+
+          (
+            cd "$CANDIDATE_SOURCE"
+
+            go test \
+              ./pkg/compression \
+              ./pkg/visitors
+          ) 2>&1 | tee "$RESULTS/build/lzma-preserve-tests.log"
+
+      - name: Download exact ROM test assets
+        run: |
+          set -Eeuo pipefail
+
+          ASSET_DIR="$RESULTS/assets"
+          OVMF_DIR="$RUNNER_TEMP/ovmf"
+
+          mkdir -p \
+            "$ASSET_DIR" \
+            "$OVMF_DIR"
+
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-delay 2 \
+            --output "$ASSET_DIR/qemu.ffs" \
+            "https://raw.githubusercontent.com/qemus/qemu/1ba2415801c647e7c9ee3ce9bf8a3de398832775/web/img/qemu.ffs"
+
+          echo \
+            "270198104fc084a83f721283e98f7c930ea5f3e83489e98117d546e2a7d29842  $ASSET_DIR/qemu.ffs" \
+            | sha256sum --check -
+
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-delay 2 \
+            --output "$ASSET_DIR/ovmf-generic_2025.11-5_all.deb" \
+            "https://deb.debian.org/debian/pool/main/e/edk2/ovmf-generic_2025.11-5_all.deb"
+
+          dpkg-deb \
+            --extract \
+            "$ASSET_DIR/ovmf-generic_2025.11-5_all.deb" \
+            "$OVMF_DIR"
+
+          ROM="$(
+            find \
+              "$OVMF_DIR" \
+              -type f \
+              -name 'OVMF_CODE_4M.fd' \
+              -print \
+              -quit
+          )"
+
+          VARS="$(
+            find \
+              "$OVMF_DIR" \
+              -type f \
+              -name 'OVMF_VARS_4M.fd' \
+              -print \
+              -quit
+          )"
+
+          if [[ -z "$ROM" || ! -s "$ROM" ]]; then
+            echo "OVMF_CODE_4M.fd was not found." >&2
+            exit 1
+          fi
+
+          if [[ -z "$VARS" || ! -s "$VARS" ]]; then
+            echo "OVMF_VARS_4M.fd was not found." >&2
+            exit 1
+          fi
+
+          echo \
+            "0082274a5b06d3b27e34972f2ec6915784033d41dd3c946bd807f0ac6525e699  $ROM" \
+            | sha256sum --check -
+
+          OVMF_ROOT="$(dirname "$ROM")"
+
+          cp \
+            "$ROM" \
+            "$ASSET_DIR/OVMF_CODE_4M.fd"
+
+          cp \
+            "$VARS" \
+            "$ASSET_DIR/OVMF_VARS_4M.fd"
+
+          {
+            echo "ROM=$ROM"
+            echo "VARS=$VARS"
+            echo "OVMF_ROOT=$OVMF_ROOT"
+            echo "QEMU_FFS=$ASSET_DIR/qemu.ffs"
+          } >> "$GITHUB_ENV"
+
+          {
+            sha256sum \
+              "$ASSET_DIR/OVMF_CODE_4M.fd" \
+              "$ASSET_DIR/OVMF_VARS_4M.fd" \
+              "$ASSET_DIR/qemu.ffs"
+
+            echo
+            stat \
+              --printf='%n %s bytes\n' \
+              "$ASSET_DIR/OVMF_CODE_4M.fd" \
+              "$ASSET_DIR/OVMF_VARS_4M.fd" \
+              "$ASSET_DIR/qemu.ffs"
+          } | tee "$ASSET_DIR/assets.txt"
+
+      - name: Run ROM comparisons and benchmarks
+        run: |
+          set -Eeuo pipefail
+
+          cat > "$RUNNER_TEMP/compare.py" <<'PY'
+          import csv
+          import hashlib
+          import json
+          import os
+          import re
+          import resource
+          import shutil
+          import statistics
+          import subprocess
+          import sys
+          import time
+          import traceback
+          from pathlib import Path
+
+
+          RESULTS = Path(os.environ["RESULTS"])
+          BASELINE_BIN = Path(os.environ["BASELINE_BIN"])
+          CANDIDATE_BIN = Path(os.environ["CANDIDATE_BIN"])
+          VERIFY_FFS_BIN = Path(os.environ["VERIFY_FFS_BIN"])
+
+          ROM = Path(os.environ["ROM"])
+          VARS = Path(os.environ["VARS"])
+          OVMF_ROOT = Path(os.environ["OVMF_ROOT"])
+          QEMU_FFS = Path(os.environ["QEMU_FFS"])
+
+          RUNS = int(os.environ["RUNS"])
+          LZMA_LEVEL = int(os.environ["LZMA_LEVEL"])
+          RUN_MATRIX = os.environ["RUN_MATRIX"].lower() == "true"
+          RUN_BOOT_TEST = os.environ["RUN_BOOT_TEST"].lower() == "true"
+
+          OUTPUTS = RESULTS / "outputs"
+          LOGS = RESULTS / "logs"
+          EXTRACTED = RESULTS / "extracted"
+          TEMPORARY = RESULTS / "temporary"
+
+          for directory in (OUTPUTS, LOGS, EXTRACTED, TEMPORARY):
+              directory.mkdir(parents=True, exist_ok=True)
+
+
+          def safe_name(value):
+              return re.sub(
+                  r"[^A-Za-z0-9_.-]+",
+                  "-",
+                  str(value),
+              ).strip("-")
+
+
+          def sha256(path):
+              digest = hashlib.sha256()
+
+              with Path(path).open("rb") as handle:
+                  for chunk in iter(
+                      lambda: handle.read(1024 * 1024),
+                      b"",
+                  ):
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+
+          def execute(command, label, check=True, quiet=False):
+              command = [str(part) for part in command]
+              log_path = LOGS / f"{safe_name(label)}.log"
+
+              if not quiet:
+                  print("+", " ".join(command), flush=True)
+
+              with log_path.open("wb") as log:
+                  process = subprocess.run(
+                      command,
+                      stdout=log,
+                      stderr=subprocess.STDOUT,
+                      check=False,
+                  )
+
+              if check and process.returncode != 0:
+                  tail = log_path.read_text(errors="replace")[-5000:]
+                  raise RuntimeError(
+                      f"{label} failed with exit code "
+                      f"{process.returncode}\n{tail}"
+                  )
+
+              return process.returncode
+
+
+          def utk_command(
+              binary,
+              firmware,
+              operations,
+              level=LZMA_LEVEL,
+              backend="system",
+          ):
+              command = [
+                  binary,
+                  f"-lzma-level={level}",
+              ]
+
+              if backend == "internal":
+                  command.append("-xzPath=")
+
+              command.extend([firmware, *operations])
+              return command
+
+
+          def run_utk(
+              binary,
+              firmware,
+              operations,
+              label,
+              level=LZMA_LEVEL,
+              backend="system",
+              check=True,
+              quiet=False,
+          ):
+              return execute(
+                  utk_command(
+                      binary,
+                      firmware,
+                      operations,
+                      level=level,
+                      backend=backend,
+                  ),
+                  label,
+                  check=check,
+                  quiet=quiet,
+              )
+
+
+          def verify_exact_ffs(firmware, label):
+              return (
+                  execute(
+                      [
+                          VERIFY_FFS_BIN,
+                          QEMU_FFS,
+                          firmware,
+                      ],
+                      label,
+                      check=False,
+                  )
+                  == 0
+              )
+
+
+          def byte_diff(first_path, second_path):
+              first = Path(first_path).read_bytes()
+              second = Path(second_path).read_bytes()
+              maximum = max(len(first), len(second))
+
+              changed = 0
+              ranges = []
+              start = None
+
+              for offset in range(maximum):
+                  first_byte = (
+                      first[offset]
+                      if offset < len(first)
+                      else None
+                  )
+                  second_byte = (
+                      second[offset]
+                      if offset < len(second)
+                      else None
+                  )
+
+                  if first_byte != second_byte:
+                      changed += 1
+
+                      if start is None:
+                          start = offset
+                  elif start is not None:
+                      ranges.append((start, offset - 1))
+                      start = None
+
+              if start is not None:
+                  ranges.append((start, maximum - 1))
+
+              return {
+                  "first_size": len(first),
+                  "second_size": len(second),
+                  "equal": first == second,
+                  "changed_bytes": changed,
+                  "changed_percent": (
+                      changed * 100.0 / maximum
+                      if maximum
+                      else 0.0
+                  ),
+                  "range_count": len(ranges),
+                  "first_difference": (
+                      f"0x{ranges[0][0]:08X}"
+                      if ranges
+                      else None
+                  ),
+                  "last_difference": (
+                      f"0x{ranges[-1][1]:08X}"
+                      if ranges
+                      else None
+                  ),
+                  "largest_range": max(
+                      (
+                          end - start + 1
+                          for start, end in ranges
+                      ),
+                      default=0,
+                  ),
+                  "first_ranges": [
+                      {
+                          "start": f"0x{start:08X}",
+                          "end": f"0x{end:08X}",
+                          "length": end - start + 1,
+                      }
+                      for start, end in ranges[:100]
+                  ],
+              }
+
+
+          def extract(
+              binary,
+              firmware,
+              destination,
+              label,
+              level=LZMA_LEVEL,
+              backend="system",
+          ):
+              destination = Path(destination)
+              shutil.rmtree(destination, ignore_errors=True)
+
+              run_utk(
+                  binary,
+                  firmware,
+                  ["extract", destination],
+                  label,
+                  level=level,
+                  backend=backend,
+              )
+
+              return destination
+
+
+          def manifest(root, ignore_summary=False):
+              result = {}
+
+              for path in sorted(Path(root).rglob("*")):
+                  if not path.is_file():
+                      continue
+
+                  if ignore_summary and path.name == "summary.json":
+                      continue
+
+                  relative = str(path.relative_to(root))
+                  result[relative] = {
+                      "size": path.stat().st_size,
+                      "sha256": sha256(path),
+                  }
+
+              return result
+
+
+          def changed_manifest_paths(first, second):
+              return [
+                  path
+                  for path in sorted(set(first) | set(second))
+                  if first.get(path) != second.get(path)
+              ]
+
+
+          def timed_operation(
+              variant,
+              binary,
+              operation,
+              round_number,
+          ):
+              output = (
+                  TEMPORARY
+                  / (
+                      f"benchmark-{operation}-"
+                      f"{variant}-{round_number}.fd"
+                  )
+              )
+
+              if operation == "noop":
+                  operations = ["save", output]
+              else:
+                  operations = [
+                      "replace_ffs",
+                      "LogoDXE",
+                      QEMU_FFS,
+                      "save",
+                      output,
+                  ]
+
+              usage_before = resource.getrusage(
+                  resource.RUSAGE_CHILDREN
+              )
+              started = time.perf_counter()
+
+              run_utk(
+                  binary,
+                  ROM,
+                  operations,
+                  (
+                      f"benchmark-{operation}-"
+                      f"{variant}-{round_number}"
+                  ),
+                  quiet=True,
+              )
+
+              wall_seconds = time.perf_counter() - started
+              usage_after = resource.getrusage(
+                  resource.RUSAGE_CHILDREN
+              )
+
+              result = {
+                  "variant": variant,
+                  "operation": operation,
+                  "round": round_number,
+                  "wall_seconds": wall_seconds,
+                  "user_seconds": (
+                      usage_after.ru_utime
+                      - usage_before.ru_utime
+                  ),
+                  "system_seconds": (
+                      usage_after.ru_stime
+                      - usage_before.ru_stime
+                  ),
+                  "output_sha256": sha256(output),
+              }
+
+              output.unlink()
+              return result
+
+
+          def main():
+              failures = []
+              comparisons = {}
+              benchmark_rows = []
+              compression_rows = []
+              regression_rows = []
+              boot_rows = []
+
+              def require(condition, message):
+                  if condition:
+                      print(f"PASS: {message}", flush=True)
+                      return
+
+                  print(f"FAIL: {message}", flush=True)
+                  failures.append(message)
+
+              exact_dir = OUTPUTS / "exact"
+              exact_dir.mkdir(parents=True, exist_ok=True)
+
+              variants = {
+                  "lzma-only": BASELINE_BIN,
+                  "lzma-preserve": CANDIDATE_BIN,
+              }
+              exact_outputs = {}
+
+              for name, binary in variants.items():
+                  noop = exact_dir / f"{name}-noop.fd"
+                  replaced = exact_dir / f"{name}-replace.fd"
+
+                  run_utk(
+                      binary,
+                      ROM,
+                      ["save", noop],
+                      f"exact-{name}-noop",
+                  )
+                  run_utk(
+                      binary,
+                      ROM,
+                      [
+                          "replace_ffs",
+                          "LogoDXE",
+                          QEMU_FFS,
+                          "save",
+                          replaced,
+                      ],
+                      f"exact-{name}-replace",
+                  )
+                  run_utk(
+                      binary,
+                      noop,
+                      ["validate"],
+                      f"exact-{name}-noop-validate",
+                  )
+                  run_utk(
+                      binary,
+                      replaced,
+                      ["validate"],
+                      f"exact-{name}-replace-validate",
+                  )
+
+                  exact_outputs[name] = {
+                      "noop": noop,
+                      "replace": replaced,
+                  }
+
+              comparison_pairs = {
+                  "original-vs-lzma-only-noop": (
+                      ROM,
+                      exact_outputs["lzma-only"]["noop"],
+                  ),
+                  "original-vs-lzma-preserve-noop": (
+                      ROM,
+                      exact_outputs["lzma-preserve"]["noop"],
+                  ),
+                  "lzma-only-vs-preserve-noop": (
+                      exact_outputs["lzma-only"]["noop"],
+                      exact_outputs["lzma-preserve"]["noop"],
+                  ),
+                  "original-vs-lzma-only-replace": (
+                      ROM,
+                      exact_outputs["lzma-only"]["replace"],
+                  ),
+                  "original-vs-lzma-preserve-replace": (
+                      ROM,
+                      exact_outputs["lzma-preserve"]["replace"],
+                  ),
+                  "lzma-only-vs-preserve-replace": (
+                      exact_outputs["lzma-only"]["replace"],
+                      exact_outputs["lzma-preserve"]["replace"],
+                  ),
+              }
+
+              for name, pair in comparison_pairs.items():
+                  comparisons[name] = byte_diff(pair[0], pair[1])
+
+              require(
+                  comparisons[
+                      "original-vs-lzma-preserve-noop"
+                  ]["equal"],
+                  (
+                      "The preservation build produces "
+                      "a byte-identical no-op save"
+                  ),
+              )
+              require(
+                  comparisons[
+                      "lzma-only-vs-preserve-replace"
+                  ]["equal"],
+                  (
+                      "Both builds produce identical "
+                      "replacement ROMs"
+                  ),
+              )
+
+              candidate_resave = (
+                  exact_dir
+                  / "lzma-preserve-resaved.fd"
+              )
+              run_utk(
+                  CANDIDATE_BIN,
+                  exact_outputs["lzma-preserve"]["replace"],
+                  ["save", candidate_resave],
+                  "exact-preserve-resave",
+              )
+
+              comparisons[
+                  "preserve-replace-vs-resave"
+              ] = byte_diff(
+                  exact_outputs["lzma-preserve"]["replace"],
+                  candidate_resave,
+              )
+
+              require(
+                  comparisons[
+                      "preserve-replace-vs-resave"
+                  ]["equal"],
+                  (
+                      "The preservation build resaves "
+                      "its modified ROM byte-identically"
+                  ),
+              )
+
+              determinism_runs = min(max(RUNS, 2), 10)
+
+              for name, binary in variants.items():
+                  hashes = []
+
+                  for index in range(determinism_runs):
+                      output = (
+                          TEMPORARY
+                          / (
+                              f"determinism-{name}-"
+                              f"{index + 1}.fd"
+                          )
+                      )
+
+                      run_utk(
+                          binary,
+                          ROM,
+                          [
+                              "replace_ffs",
+                              "LogoDXE",
+                              QEMU_FFS,
+                              "save",
+                              output,
+                          ],
+                          (
+                              f"determinism-{name}-"
+                              f"{index + 1}"
+                          ),
+                      )
+
+                      hashes.append(sha256(output))
+                      output.unlink()
+
+                  require(
+                      len(set(hashes)) == 1,
+                      (
+                          f"{name} replacement output "
+                          "is deterministic across "
+                          f"{determinism_runs} runs"
+                      ),
+                  )
+
+              baseline_exact = verify_exact_ffs(
+                  exact_outputs["lzma-only"]["replace"],
+                  "verify-lzma-only-exact-ffs",
+              )
+              candidate_exact = verify_exact_ffs(
+                  exact_outputs["lzma-preserve"]["replace"],
+                  "verify-lzma-preserve-exact-ffs",
+              )
+
+              require(
+                  baseline_exact,
+                  (
+                      "The LZMA-only output contains "
+                      "the exact qemu.ffs"
+                  ),
+              )
+              require(
+                  candidate_exact,
+                  (
+                      "The preservation output contains "
+                      "the exact qemu.ffs"
+                  ),
+              )
+
+              original_extract = extract(
+                  CANDIDATE_BIN,
+                  ROM,
+                  EXTRACTED / "original",
+                  "extract-original",
+              )
+              baseline_extract = extract(
+                  BASELINE_BIN,
+                  exact_outputs["lzma-only"]["replace"],
+                  EXTRACTED / "lzma-only-replace",
+                  "extract-lzma-only",
+              )
+              candidate_extract = extract(
+                  CANDIDATE_BIN,
+                  exact_outputs["lzma-preserve"]["replace"],
+                  EXTRACTED / "lzma-preserve-replace",
+                  "extract-lzma-preserve",
+              )
+
+              original_manifest = manifest(
+                  original_extract,
+                  ignore_summary=True,
+              )
+              baseline_manifest = manifest(
+                  baseline_extract,
+                  ignore_summary=True,
+              )
+              candidate_manifest = manifest(
+                  candidate_extract,
+                  ignore_summary=True,
+              )
+
+              manifest_changes = {
+                  "original-vs-lzma-only": (
+                      changed_manifest_paths(
+                          original_manifest,
+                          baseline_manifest,
+                      )
+                  ),
+                  "original-vs-preserve": (
+                      changed_manifest_paths(
+                          original_manifest,
+                          candidate_manifest,
+                      )
+                  ),
+                  "lzma-only-vs-preserve": (
+                      changed_manifest_paths(
+                          baseline_manifest,
+                          candidate_manifest,
+                      )
+                  ),
+              }
+
+              with (
+                  RESULTS / "manifest-changes.json"
+              ).open("w") as handle:
+                  json.dump(
+                      manifest_changes,
+                      handle,
+                      indent=2,
+                  )
+
+              for operation in ("noop", "replace"):
+                  for name, binary in variants.items():
+                      timed_operation(
+                          name,
+                          binary,
+                          operation,
+                          0,
+                      )
+
+                  for round_number in range(1, RUNS + 1):
+                      order = list(variants.items())
+
+                      if round_number % 2 == 0:
+                          order.reverse()
+
+                      for name, binary in order:
+                          benchmark_rows.append(
+                              timed_operation(
+                                  name,
+                                  binary,
+                                  operation,
+                                  round_number,
+                              )
+                          )
+
+              with (
+                  RESULTS / "benchmark.csv"
+              ).open("w", newline="") as handle:
+                  writer = csv.DictWriter(
+                      handle,
+                      fieldnames=list(benchmark_rows[0]),
+                  )
+                  writer.writeheader()
+                  writer.writerows(benchmark_rows)
+
+              benchmark_summary = {}
+
+              for operation in ("noop", "replace"):
+                  benchmark_summary[operation] = {}
+
+                  for name in variants:
+                      rows = [
+                          row
+                          for row in benchmark_rows
+                          if (
+                              row["operation"] == operation
+                              and row["variant"] == name
+                          )
+                      ]
+                      wall_values = [
+                          row["wall_seconds"]
+                          for row in rows
+                      ]
+                      unique_hashes = {
+                          row["output_sha256"]
+                          for row in rows
+                      }
+
+                      benchmark_summary[operation][name] = {
+                          "runs": len(rows),
+                          "mean": statistics.mean(
+                              wall_values
+                          ),
+                          "median": statistics.median(
+                              wall_values
+                          ),
+                          "stdev": (
+                              statistics.stdev(wall_values)
+                              if len(wall_values) > 1
+                              else 0.0
+                          ),
+                          "minimum": min(wall_values),
+                          "maximum": max(wall_values),
+                          "unique_hashes": len(
+                              unique_hashes
+                          ),
+                      }
+
+                      require(
+                          len(unique_hashes) == 1,
+                          (
+                              f"{name} {operation} "
+                              "benchmark output is "
+                              "deterministic"
+                          ),
+                      )
+
+                  baseline_mean = (
+                      benchmark_summary[
+                          operation
+                      ]["lzma-only"]["mean"]
+                  )
+                  candidate_mean = (
+                      benchmark_summary[
+                          operation
+                      ]["lzma-preserve"]["mean"]
+                  )
+                  benchmark_summary[
+                      operation
+                  ]["preservation_speedup"] = (
+                      baseline_mean / candidate_mean
+                  )
+
+              if RUN_MATRIX:
+                  matrix_dir = (
+                      TEMPORARY
+                      / "compression-matrix"
+                  )
+                  matrix_dir.mkdir(
+                      parents=True,
+                      exist_ok=True,
+                  )
+
+                  for backend in ("system", "internal"):
+                      for level in range(10):
+                          matrix_outputs = {}
+
+                          for name, binary in variants.items():
+                              output = (
+                                  matrix_dir
+                                  / (
+                                      f"{name}-{backend}-"
+                                      f"{level}.fd"
+                                  )
+                              )
+
+                              run_utk(
+                                  binary,
+                                  ROM,
+                                  [
+                                      "replace_ffs",
+                                      "LogoDXE",
+                                      QEMU_FFS,
+                                      "save",
+                                      output,
+                                  ],
+                                  (
+                                      f"matrix-{name}-"
+                                      f"{backend}-{level}"
+                                  ),
+                                  level=level,
+                                  backend=backend,
+                              )
+                              run_utk(
+                                  binary,
+                                  output,
+                                  ["validate"],
+                                  (
+                                      f"matrix-{name}-"
+                                      f"{backend}-{level}-"
+                                      "validate"
+                                  ),
+                                  level=level,
+                                  backend=backend,
+                              )
+
+                              matrix_outputs[name] = output
+
+                          baseline_matrix_exact = (
+                              verify_exact_ffs(
+                                  matrix_outputs[
+                                      "lzma-only"
+                                  ],
+                                  (
+                                      "matrix-verify-"
+                                      "lzma-only-"
+                                      f"{backend}-{level}"
+                                  ),
+                              )
+                          )
+                          candidate_matrix_exact = (
+                              verify_exact_ffs(
+                                  matrix_outputs[
+                                      "lzma-preserve"
+                                  ],
+                                  (
+                                      "matrix-verify-"
+                                      "lzma-preserve-"
+                                      f"{backend}-{level}"
+                                  ),
+                              )
+                          )
+                          outputs_equal = (
+                              sha256(
+                                  matrix_outputs[
+                                      "lzma-only"
+                                  ]
+                              )
+                              == sha256(
+                                  matrix_outputs[
+                                      "lzma-preserve"
+                                  ]
+                              )
+                          )
+
+                          require(
+                              baseline_matrix_exact,
+                              (
+                                  "LZMA-only output "
+                                  "contains the exact "
+                                  "qemu.ffs using "
+                                  f"{backend} LZMA "
+                                  f"level {level}"
+                              ),
+                          )
+                          require(
+                              candidate_matrix_exact,
+                              (
+                                  "Preservation output "
+                                  "contains the exact "
+                                  "qemu.ffs using "
+                                  f"{backend} LZMA "
+                                  f"level {level}"
+                              ),
+                          )
+                          require(
+                              outputs_equal,
+                              (
+                                  "Both builds produce "
+                                  "identical output using "
+                                  f"{backend} LZMA "
+                                  f"level {level}"
+                              ),
+                          )
+
+                          baseline_stats = byte_diff(
+                              ROM,
+                              matrix_outputs[
+                                  "lzma-only"
+                              ],
+                          )
+                          candidate_stats = byte_diff(
+                              ROM,
+                              matrix_outputs[
+                                  "lzma-preserve"
+                              ],
+                          )
+
+                          compression_rows.append(
+                              {
+                                  "backend": backend,
+                                  "level": level,
+                                  "outputs_equal": (
+                                      outputs_equal
+                                  ),
+                                  "baseline_hash": sha256(
+                                      matrix_outputs[
+                                          "lzma-only"
+                                      ]
+                                  ),
+                                  "candidate_hash": sha256(
+                                      matrix_outputs[
+                                          "lzma-preserve"
+                                      ]
+                                  ),
+                                  "baseline_changed_bytes": (
+                                      baseline_stats[
+                                          "changed_bytes"
+                                      ]
+                                  ),
+                                  "candidate_changed_bytes": (
+                                      candidate_stats[
+                                          "changed_bytes"
+                                      ]
+                                  ),
+                                  "baseline_exact_qemu_ffs": (
+                                      baseline_matrix_exact
+                                  ),
+                                  "candidate_exact_qemu_ffs": (
+                                      candidate_matrix_exact
+                                  ),
+                              }
+                          )
+
+                          for output in (
+                              matrix_outputs.values()
+                          ):
+                              output.unlink()
+
+                  with (
+                      RESULTS / "compression-matrix.csv"
+                  ).open("w", newline="") as handle:
+                      writer = csv.DictWriter(
+                          handle,
+                          fieldnames=list(
+                              compression_rows[0]
+                          ),
+                      )
+                      writer.writeheader()
+                      writer.writerows(
+                          compression_rows
+                      )
+
+              roms = sorted(
+                  OVMF_ROOT.glob("OVMF_CODE_4M*.fd")
+              )
+
+              if not roms:
+                  raise RuntimeError(
+                      "No OVMF_CODE_4M*.fd files found"
+                  )
+
+              for index, test_rom in enumerate(
+                  roms,
+                  start=1,
+              ):
+                  relative = str(
+                      test_rom.relative_to(OVMF_ROOT)
+                  )
+                  slug = safe_name(relative)
+                  regression_dir = (
+                      TEMPORARY
+                      / f"regression-{index}"
+                  )
+                  regression_dir.mkdir(
+                      parents=True,
+                      exist_ok=True,
+                  )
+
+                  baseline_output = (
+                      regression_dir
+                      / "lzma-only.fd"
+                  )
+                  candidate_output = (
+                      regression_dir
+                      / "lzma-preserve.fd"
+                  )
+                  candidate_noop = (
+                      regression_dir
+                      / "candidate-noop.fd"
+                  )
+
+                  run_utk(
+                      CANDIDATE_BIN,
+                      test_rom,
+                      ["save", candidate_noop],
+                      (
+                          f"regression-{index}-"
+                          f"{slug}-noop"
+                      ),
+                  )
+                  run_utk(
+                      BASELINE_BIN,
+                      test_rom,
+                      [
+                          "replace_ffs",
+                          "LogoDXE",
+                          QEMU_FFS,
+                          "save",
+                          baseline_output,
+                      ],
+                      (
+                          f"regression-{index}-"
+                          f"{slug}-baseline"
+                      ),
+                  )
+                  run_utk(
+                      CANDIDATE_BIN,
+                      test_rom,
+                      [
+                          "replace_ffs",
+                          "LogoDXE",
+                          QEMU_FFS,
+                          "save",
+                          candidate_output,
+                      ],
+                      (
+                          f"regression-{index}-"
+                          f"{slug}-candidate"
+                      ),
+                  )
+                  run_utk(
+                      BASELINE_BIN,
+                      baseline_output,
+                      ["validate"],
+                      (
+                          f"regression-{index}-"
+                          f"{slug}-baseline-validate"
+                      ),
+                  )
+                  run_utk(
+                      CANDIDATE_BIN,
+                      candidate_output,
+                      ["validate"],
+                      (
+                          f"regression-{index}-"
+                          f"{slug}-candidate-validate"
+                      ),
+                  )
+
+                  noop_identical = (
+                      sha256(test_rom)
+                      == sha256(candidate_noop)
+                  )
+                  outputs_equal = (
+                      sha256(baseline_output)
+                      == sha256(candidate_output)
+                  )
+                  baseline_regression_exact = (
+                      verify_exact_ffs(
+                          baseline_output,
+                          (
+                              f"regression-{index}-"
+                              f"{slug}-verify-baseline"
+                          ),
+                      )
+                  )
+                  candidate_regression_exact = (
+                      verify_exact_ffs(
+                          candidate_output,
+                          (
+                              f"regression-{index}-"
+                              f"{slug}-verify-candidate"
+                          ),
+                      )
+                  )
+
+                  require(
+                      noop_identical,
+                      (
+                          f"{relative}: candidate "
+                          "no-op is byte-identical"
+                      ),
+                  )
+                  require(
+                      outputs_equal,
+                      (
+                          f"{relative}: both builds "
+                          "produce identical "
+                          "replacement ROMs"
+                      ),
+                  )
+                  require(
+                      baseline_regression_exact,
+                      (
+                          f"{relative}: baseline "
+                          "contains the exact qemu.ffs"
+                      ),
+                  )
+                  require(
+                      candidate_regression_exact,
+                      (
+                          f"{relative}: candidate "
+                          "contains the exact qemu.ffs"
+                      ),
+                  )
+
+                  regression_rows.append(
+                      {
+                          "rom": relative,
+                          "candidate_noop_identical": (
+                              noop_identical
+                          ),
+                          "replacement_outputs_equal": (
+                              outputs_equal
+                          ),
+                          "baseline_exact_qemu_ffs": (
+                              baseline_regression_exact
+                          ),
+                          "candidate_exact_qemu_ffs": (
+                              candidate_regression_exact
+                          ),
+                      }
+                  )
+
+                  shutil.rmtree(
+                      regression_dir,
+                      ignore_errors=True,
+                  )
+
+              with (
+                  RESULTS / "rom-regression.csv"
+              ).open("w", newline="") as handle:
+                  writer = csv.DictWriter(
+                      handle,
+                      fieldnames=list(
+                          regression_rows[0]
+                      ),
+                  )
+                  writer.writeheader()
+                  writer.writerows(regression_rows)
+
+              if RUN_BOOT_TEST:
+                  for name in variants:
+                      firmware = (
+                          exact_outputs[name]["replace"]
+                      )
+                      vars_copy = (
+                          TEMPORARY
+                          / f"{name}.vars.fd"
+                      )
+                      shutil.copy2(VARS, vars_copy)
+
+                      log_path = (
+                          LOGS / f"boot-{name}.log"
+                      )
+                      command = [
+                          "timeout",
+                          "12s",
+                          "qemu-system-x86_64",
+                          "-machine",
+                          "q35,accel=tcg",
+                          "-cpu",
+                          "max",
+                          "-m",
+                          "256M",
+                          "-nodefaults",
+                          "-drive",
+                          (
+                              "if=pflash,unit=0,"
+                              "format=raw,"
+                              "readonly=on,"
+                              f"file={firmware}"
+                          ),
+                          "-drive",
+                          (
+                              "if=pflash,unit=1,"
+                              "format=raw,"
+                              f"file={vars_copy}"
+                          ),
+                          "-display",
+                          "none",
+                          "-serial",
+                          "none",
+                          "-monitor",
+                          "none",
+                          "-no-reboot",
+                          "-no-shutdown",
+                      ]
+
+                      with log_path.open("wb") as log:
+                          process = subprocess.run(
+                              command,
+                              stdout=log,
+                              stderr=subprocess.STDOUT,
+                              check=False,
+                          )
+
+                      stayed_running = (
+                          process.returncode == 124
+                      )
+                      require(
+                          stayed_running,
+                          (
+                              f"{name} ROM remains "
+                              "running under QEMU TCG "
+                              "for 12 seconds"
+                          ),
+                      )
+
+                      boot_rows.append(
+                          {
+                              "variant": name,
+                              "return_code": (
+                                  process.returncode
+                              ),
+                              "stayed_running": (
+                                  stayed_running
+                              ),
+                          }
+                      )
+
+              report = [
+                  "# Fiano ROM comparison",
+                  "",
+                  (
+                      f"- Fiano version: "
+                      f"**{os.environ['FIANO_VERSION']}**"
+                  ),
+                  (
+                      f"- Go version: "
+                      f"**{os.environ['GO_VERSION']}**"
+                  ),
+                  f"- Benchmark runs: **{RUNS}**",
+                  (
+                      f"- Primary LZMA level: "
+                      f"**{LZMA_LEVEL}**"
+                  ),
+                  (
+                      "- Compression matrix: "
+                      f"**{'enabled' if RUN_MATRIX else 'disabled'}**"
+                  ),
+                  (
+                      "- QEMU boot test: "
+                      f"**{'enabled' if RUN_BOOT_TEST else 'disabled'}**"
+                  ),
+                  "",
+                  "## Exact byte comparisons",
+                  "",
+                  (
+                      "| Comparison | Equal | "
+                      "Changed bytes | Changed % | "
+                      "Ranges | First | Last |"
+                  ),
+                  (
+                      "|---|---:|---:|---:|"
+                      "---:|---:|---:|"
+                  ),
+              ]
+
+              for name, stats in comparisons.items():
+                  report.append(
+                      "| "
+                      + " | ".join(
+                          [
+                              name,
+                              (
+                                  "yes"
+                                  if stats["equal"]
+                                  else "no"
+                              ),
+                              f"{stats['changed_bytes']:,}",
+                              (
+                                  f"{stats['changed_percent']:.6f}"
+                              ),
+                              f"{stats['range_count']:,}",
+                              (
+                                  stats["first_difference"]
+                                  or "-"
+                              ),
+                              (
+                                  stats["last_difference"]
+                                  or "-"
+                              ),
+                          ]
+                      )
+                      + " |"
+                  )
+
+              report.extend(
+                  [
+                      "",
+                      "## Replacement verification",
+                      "",
+                      (
+                          "- LZMA-only contains exact "
+                          "qemu.ffs: "
+                          f"**{'yes' if baseline_exact else 'no'}**"
+                      ),
+                      (
+                          "- Preservation contains exact "
+                          "qemu.ffs: "
+                          f"**{'yes' if candidate_exact else 'no'}**"
+                      ),
+                      (
+                          "- Logical extracted paths "
+                          "differing between both "
+                          "replacement outputs: "
+                          f"`{len(manifest_changes['lzma-only-vs-preserve'])}`"
+                      ),
+                      "",
+                      "## Runtime benchmark",
+                      "",
+                      (
+                          "| Operation | Variant | "
+                          "Mean | Median | Stddev | "
+                          "Minimum | Maximum |"
+                      ),
+                      (
+                          "|---|---|---:|---:|"
+                          "---:|---:|---:|"
+                      ),
+                  ]
+              )
+
+              for operation in ("noop", "replace"):
+                  for name in variants:
+                      stats = (
+                          benchmark_summary[
+                              operation
+                          ][name]
+                      )
+                      report.append(
+                          "| "
+                          + " | ".join(
+                              [
+                                  operation,
+                                  name,
+                                  f"{stats['mean']:.6f}s",
+                                  (
+                                      f"{stats['median']:.6f}s"
+                                  ),
+                                  (
+                                      f"{stats['stdev']:.6f}s"
+                                  ),
+                                  (
+                                      f"{stats['minimum']:.6f}s"
+                                  ),
+                                  (
+                                      f"{stats['maximum']:.6f}s"
+                                  ),
+                              ]
+                          )
+                          + " |"
+                      )
+
+                  speedup = (
+                      benchmark_summary[
+                          operation
+                      ]["preservation_speedup"]
+                  )
+                  report.extend(
+                      [
+                          "",
+                          (
+                              "Preservation-build "
+                              f"`{operation}` speedup: "
+                              f"**{speedup:.3f}x**"
+                          ),
+                          "",
+                      ]
+                  )
+
+              if compression_rows:
+                  report.extend(
+                      [
+                          "## Compression matrix",
+                          "",
+                          (
+                              "| Backend | Level | "
+                              "Outputs equal | "
+                              "LZMA-only changed | "
+                              "Preservation changed | "
+                              "Baseline exact FFS | "
+                              "Candidate exact FFS |"
+                          ),
+                          (
+                              "|---|---:|---:|---:|"
+                              "---:|---:|---:|"
+                          ),
+                      ]
+                  )
+
+                  for row in compression_rows:
+                      report.append(
+                          "| "
+                          + " | ".join(
+                              [
+                                  row["backend"],
+                                  str(row["level"]),
+                                  (
+                                      "yes"
+                                      if row[
+                                          "outputs_equal"
+                                      ]
+                                      else "no"
+                                  ),
+                                  (
+                                      f"{row['baseline_changed_bytes']:,}"
+                                  ),
+                                  (
+                                      f"{row['candidate_changed_bytes']:,}"
+                                  ),
+                                  (
+                                      "yes"
+                                      if row[
+                                          "baseline_exact_qemu_ffs"
+                                      ]
+                                      else "no"
+                                  ),
+                                  (
+                                      "yes"
+                                      if row[
+                                          "candidate_exact_qemu_ffs"
+                                      ]
+                                      else "no"
+                                  ),
+                              ]
+                          )
+                          + " |"
+                      )
+
+                  report.append("")
+
+              report.extend(
+                  [
+                      "## OVMF regression matrix",
+                      "",
+                      (
+                          "| ROM | Candidate no-op "
+                          "identical | Replacement "
+                          "outputs equal | Baseline "
+                          "exact FFS | Candidate "
+                          "exact FFS |"
+                      ),
+                      "|---|---:|---:|---:|---:|",
+                  ]
+              )
+
+              for row in regression_rows:
+                  report.append(
+                      "| "
+                      + " | ".join(
+                          [
+                              row["rom"],
+                              str(
+                                  row[
+                                      "candidate_noop_identical"
+                                  ]
+                              ),
+                              str(
+                                  row[
+                                      "replacement_outputs_equal"
+                                  ]
+                              ),
+                              str(
+                                  row[
+                                      "baseline_exact_qemu_ffs"
+                                  ]
+                              ),
+                              str(
+                                  row[
+                                      "candidate_exact_qemu_ffs"
+                                  ]
+                              ),
+                          ]
+                      )
+                      + " |"
+                  )
+
+              report.append("")
+
+              if boot_rows:
+                  report.extend(
+                      [
+                          "## QEMU boot smoke test",
+                          "",
+                          (
+                              "| Variant | Exit code | "
+                              "Stayed running |"
+                          ),
+                          "|---|---:|---:|",
+                      ]
+                  )
+
+                  for row in boot_rows:
+                      report.append(
+                          (
+                              f"| {row['variant']} | "
+                              f"{row['return_code']} | "
+                              f"{row['stayed_running']} |"
+                          )
+                      )
+
+                  report.append("")
+
+              if failures:
+                  report.extend(["## Failures", ""])
+                  report.extend(
+                      f"- {failure}"
+                      for failure in failures
+                  )
+              else:
+                  report.extend(
+                      [
+                          "## Result",
+                          "",
+                          "All required checks passed.",
+                      ]
+                  )
+
+              report_text = "\n".join(report) + "\n"
+              (RESULTS / "report.md").write_text(
+                  report_text
+              )
+              print(report_text)
+
+              result_data = {
+                  "comparisons": comparisons,
+                  "exact_ffs": {
+                      "lzma_only": baseline_exact,
+                      "lzma_preserve": candidate_exact,
+                  },
+                  "benchmark": benchmark_summary,
+                  "compression_matrix": compression_rows,
+                  "regression": regression_rows,
+                  "boot": boot_rows,
+                  "manifest_changes": manifest_changes,
+                  "failures": failures,
+              }
+
+              with (
+                  RESULTS / "results.json"
+              ).open("w") as handle:
+                  json.dump(
+                      result_data,
+                      handle,
+                      indent=2,
+                  )
+
+              return 1 if failures else 0
+
+
+          try:
+              sys.exit(main())
+          except Exception:
+              error = traceback.format_exc()
+              (
+                  RESULTS / "fatal-error.txt"
+              ).write_text(error)
+              print(error, file=sys.stderr)
+              raise
+          PY
+
+          python3 "$RUNNER_TEMP/compare.py"
+
+      - name: Publish workflow summary
+        if: always()
+        run: |
+          set -Eeuo pipefail
+
+          mkdir -p "$RESULTS"
+
+          if [[ -s "$RESULTS/report.md" ]]; then
+            cat \
+              "$RESULTS/report.md" \
+              >> "$GITHUB_STEP_SUMMARY"
+
+            cat "$RESULTS/report.md"
+          else
+            {
+              echo "# Fiano ROM comparison"
+              echo
+              echo "The comparison stopped before the final report was generated."
+              echo
+              echo "Inspect the first failed step and the uploaded diagnostic files."
+            } | tee \
+              "$RESULTS/failure-summary.md" \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          {
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "event=$GITHUB_EVENT_NAME"
+            echo "ref=$GITHUB_REF"
+            echo "sha=$GITHUB_SHA"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+          } > "$RESULTS/workflow-context.txt"
+
+      - name: Upload comparison artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fiano-rom-comparison-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/results
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
