@@ -13,8 +13,8 @@ RUN set -eu && \
     git clone -b "v$VERSION_ARG" https://github.com/linuxboot/fiano.git /src && \
     git -C /src apply --check /tmp/lzma-level.patch && \
     git -C /src apply /tmp/lzma-level.patch && \
-    git -C /src apply --check /tmp/preserve-unchanged.patch && \
-    git -C /src apply /tmp/preserve-unchanged.patch && \
+    git -C /src apply --recount --check /tmp/preserve-unchanged.patch && \
+    git -C /src apply --recount /tmp/preserve-unchanged.patch && \
     rm -rf /tmp/* /var/cache/apk/*
 
 WORKDIR /src/cmds/utk
