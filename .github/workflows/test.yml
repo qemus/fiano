@@ -1149,23 +1149,97 @@ jobs:
           func TestWorkflowCLINVRAMCommands(
           	t *testing.T,
           ) {
-          	t.Run("invalidate_nvar", func(t *testing.T) {
-          		root := workflowParseNVRAM(t)
+          	runInvalidation := func(
+          		t *testing.T,
+          		args ...string,
+          	) {
+          		t.Helper()
 
-          		workflowRunMutation(
+          		root := workflowParseNVRAM(t)
+          		before := append(
+          			[]byte(nil),
+          			root.Buf()...,
+          		)
+
+          		parsed := workflowExecuteCLI(
           			t,
           			root,
+          			args...,
+          		)
+
+          		if len(parsed) != 1 {
+          			t.Fatalf(
+          				"ParseCLI(%q) produced %d visitors; expected 1",
+          				args,
+          				len(parsed),
+          			)
+          		}
+
+          		invalidation, ok := parsed[0].(*NVarInvalidate)
+          		if !ok {
+          			t.Fatalf(
+          				"ParseCLI(%q) produced visitor type %T",
+          				args,
+          				parsed[0],
+          			)
+          		}
+
+          		if len(invalidation.Matches) == 0 {
+          			t.Fatalf(
+          				"%s did not match any NVAR entries",
+          				args[0],
+          			)
+          		}
+
+          		for _, match := range invalidation.Matches {
+          			nvar, ok := match.(*uefi.NVar)
+          			if !ok {
+          				t.Fatalf(
+          					"%s matched object type %T; expected *uefi.NVar",
+          					args[0],
+          					match,
+          				)
+          			}
+
+          			if nvar.Type != uefi.InvalidNVarEntry {
+          				t.Fatalf(
+          					"%s left NVAR %q with type %v",
+          					args[0],
+          					nvar.Name,
+          					nvar.Type,
+          				)
+          			}
+
+          			if !nvar.Modified {
+          				t.Fatalf(
+          					"%s did not mark NVAR %q modified",
+          					args[0],
+          					nvar.Name,
+          				)
+          			}
+          		}
+
+          		workflowExecuteCLI(
+          			t,
+          			root,
+          			"nvram-compact",
+          		)
+
+          		workflowVerifyMutation(
+          			t,
+          			root,
+          			before,
           			true,
+          			args[0]+" + nvram-compact",
+          		)
+          	}
+
+          	t.Run("invalidate_nvar", func(t *testing.T) {
+          		runInvalidation(
+          			t,
           			"invalidate_nvar",
           			"Test0",
           		)
-
-          		state := workflowCollectModified(t, root)
-          		if state.nvars == 0 {
-          			t.Fatal(
-          				"invalidate_nvar did not mark an NVar modified",
-          			)
-          		}
           	})
 
           	t.Run(
@@ -1184,22 +1258,11 @@ jobs:
           				t.Fatal(err)
           			}
 
-          			root := workflowParseNVRAM(t)
-
-          			workflowRunMutation(
+          			runInvalidation(
           				t,
-          				root,
-          				true,
           				"invalidate_nvar_except",
           				whitelist,
           			)
-
-          			state := workflowCollectModified(t, root)
-          			if state.nvars == 0 {
-          				t.Fatal(
-          					"invalidate_nvar_except did not mark any NVar modified",
-          				)
-          			}
           		},
           	)
 
