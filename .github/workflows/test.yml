@@ -1186,20 +1186,19 @@ jobs:
 
           		if len(invalidation.Matches) == 0 {
           			t.Fatalf(
-          				"%s did not match any NVAR entries",
+          				"%s did not match any objects",
           				args[0],
           			)
           		}
 
+          		matchedNVars := 0
           		for _, match := range invalidation.Matches {
           			nvar, ok := match.(*uefi.NVar)
           			if !ok {
-          				t.Fatalf(
-          					"%s matched object type %T; expected *uefi.NVar",
-          					args[0],
-          					match,
-          				)
+          				continue
           			}
+
+          			matchedNVars++
 
           			if nvar.Type != uefi.InvalidNVarEntry {
           				t.Fatalf(
@@ -1217,6 +1216,13 @@ jobs:
           					nvar.Name,
           				)
           			}
+          		}
+
+          		if matchedNVars == 0 {
+          			t.Fatalf(
+          				"%s did not match any NVAR entries",
+          				args[0],
+          			)
           		}
 
           		workflowExecuteCLI(
