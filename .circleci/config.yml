@@ -1,0 +1,88 @@
+# Check https://circleci.com/docs/2.0/language-go/ for more details
+version: 2
+workflows:
+  version: 2
+  build_and_test:
+    jobs:
+      - clean-code
+      - test:
+          requires:
+            - clean-code
+      - race:
+          requires:
+            - clean-code
+      - coverage:
+          requires:
+            - clean-code
+      - check_licenses:
+          requires:
+            - clean-code
+jobs:
+  clean-code:
+    docker:
+      - image: cimg/go:1.17
+    steps:
+      - checkout
+      - run:
+          name: Install ineffassign
+          command: |
+            go get -u github.com/gordonklaus/ineffassign
+            ineffassign ./...
+      - run:
+          name: Check dependencies
+          command: |
+            go mod download
+            go mod verify
+      - run:
+          name: gofmt
+          command: test -z "$(gofmt -s -l cmds pkg)"
+  test:
+    docker:
+      - image: cimg/go:1.17
+    steps:
+      - checkout
+      - run:
+          name: Test all
+          command: go test -a -ldflags '-s' ./...
+      - run:
+          name: Test coverage
+          command: go test -cover ./...
+    # https://circleci.com/docs/2.0/configuration-reference/#resourceclass
+    resource_class: medium
+  race:
+    docker:
+      - image: cimg/go:1.17
+    steps:
+      - checkout
+      - run:
+          name: Race detector
+          command: go test -race ./...
+  coverage:
+    docker:
+      - image: cimg/go:1.17
+    steps:
+      - checkout
+      - run:
+          name: Test Coverage
+          command: |
+            set -e
+            > coverage.txt
+            for d in $(go list ./... | grep -v vendor); do
+                go test -coverprofile=profile.out -covermode=atomic $d
+                if [ -f profile.out ]; then
+                    cat profile.out >> coverage.txt
+                    rm profile.out
+                fi
+            done
+      - run:
+          name: Report Coverage
+          when: on_success
+          command: bash <(curl -s https://codecov.io/bash)
+  check_licenses:
+    docker:
+      - image: cimg/go:1.17
+    steps:
+      - checkout
+      - run:
+          name: Check licenses
+          command: go run scripts/checklicenses/checklicenses.go

@@ -1,0 +1,10 @@
+cmds/fmap/fmap
+cmds/futk/futk
+cmds/glzma/glzma
+cmds/guid2english/guid2english
+cmds/utk/utk
+cmds/create-ffs/create-ffs
+cmds/futk/futk
+cmds/fspinfo/fspinfo
+.vimrc
+*.swp
