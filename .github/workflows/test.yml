@@ -7,8 +7,6 @@ on:
     paths:
       - ".github/workflows/test.yml"
       - "Dockerfile"
-      - "lzma-level.patch"
-      - "preserve-unchanged.patch"
 
   workflow_dispatch:
     inputs:
@@ -130,40 +128,22 @@ jobs:
             exit 1
           fi
 
-          for file in \
-            Dockerfile \
-            lzma-level.patch \
-            preserve-unchanged.patch; do
-
-            if [[ ! -s "$file" ]]; then
-              echo "Required project file is missing or empty: $file" >&2
-              exit 1
-            fi
-          done
+          if [[ ! -s Dockerfile ]]; then
+            echo "Required project file is missing or empty: Dockerfile" >&2
+            exit 1
+          fi
 
           grep -Fq \
             'golang:1.25.7-alpine' \
             Dockerfile
 
           grep -Fq \
-            'git clone -b "v$VERSION_ARG"' \
+            '--branch module' \
             Dockerfile
 
           grep -Fq \
-            'lzma-level' \
-            lzma-level.patch
-
-          grep -Fq \
-            'propagateModified' \
-            preserve-unchanged.patch
-
-          grep -Fq \
-            'pkg/visitors/tightenme.go' \
-            preserve-unchanged.patch
-
-          grep -Fq \
-            'pkg/visitors/flatten.go' \
-            preserve-unchanged.patch
+            'MODULE_COMMIT' \
+            Dockerfile
 
           {
             echo "go_version=$GO_VERSION"
@@ -179,11 +159,13 @@ jobs:
           set -Eeuo pipefail
 
           UPSTREAM_SOURCE="$RUNNER_TEMP/fiano-upstream"
+          MODULE_SOURCE="$RUNNER_TEMP/fiano-module"
           BASELINE_SOURCE="$RUNNER_TEMP/fiano-lzma-only"
           CANDIDATE_SOURCE="$RUNNER_TEMP/fiano-lzma-preserve"
 
           rm -rf \
             "$UPSTREAM_SOURCE" \
+            "$MODULE_SOURCE" \
             "$BASELINE_SOURCE" \
             "$CANDIDATE_SOURCE"
 
@@ -192,6 +174,12 @@ jobs:
             --depth 1 \
             https://github.com/linuxboot/fiano.git \
             "$UPSTREAM_SOURCE"
+
+          git clone \
+            --branch module \
+            --depth 1 \
+            https://github.com/qemus/fiano.git \
+            "$MODULE_SOURCE"
 
           git clone \
             --local \
@@ -205,28 +193,36 @@ jobs:
             "$UPSTREAM_SOURCE" \
             "$CANDIDATE_SOURCE"
 
-          git -C "$BASELINE_SOURCE" apply \
-            --check \
-            "$GITHUB_WORKSPACE/lzma-level.patch"
+          for file in \
+            pkg/compression/compression.go \
+            pkg/compression/lzma.go \
+            pkg/compression/systemlzma.go; do
 
-          git -C "$BASELINE_SOURCE" apply \
-            "$GITHUB_WORKSPACE/lzma-level.patch"
+            if [[ ! -s "$MODULE_SOURCE/$file" ]]; then
+              echo "Required module source file is missing or empty: $file" >&2
+              exit 1
+            fi
 
-          git -C "$CANDIDATE_SOURCE" apply \
-            --check \
-            "$GITHUB_WORKSPACE/lzma-level.patch"
+            cp \
+              "$MODULE_SOURCE/$file" \
+              "$BASELINE_SOURCE/$file"
+          done
 
-          git -C "$CANDIDATE_SOURCE" apply \
-            "$GITHUB_WORKSPACE/lzma-level.patch"
+          find "$CANDIDATE_SOURCE" \
+            -mindepth 1 \
+            -maxdepth 1 \
+            ! -name .git \
+            -exec rm -rf {} +
 
-          git -C "$CANDIDATE_SOURCE" apply \
-            --recount \
-            --check \
-            "$GITHUB_WORKSPACE/preserve-unchanged.patch"
+          cp -a \
+            "$MODULE_SOURCE/." \
+            "$CANDIDATE_SOURCE/"
 
-          git -C "$CANDIDATE_SOURCE" apply \
-            --recount \
-            "$GITHUB_WORKSPACE/preserve-unchanged.patch"
+          rm -rf "$CANDIDATE_SOURCE/.git"
+
+          cp -a \
+            "$UPSTREAM_SOURCE/.git" \
+            "$CANDIDATE_SOURCE/.git"
 
           grep -Fq \
             'lzma-level' \
@@ -236,7 +232,7 @@ jobs:
             'propagateModified' \
             "$BASELINE_SOURCE/pkg"; then
 
-            echo "The preservation patch is present in the baseline source." >&2
+            echo "The preservation changes are present in the baseline source." >&2
             exit 1
           fi
 
@@ -260,6 +256,10 @@ jobs:
           {
             echo "## Upstream commit"
             git -C "$UPSTREAM_SOURCE" rev-parse HEAD
+
+            echo
+            echo "## Module commit"
+            git -C "$MODULE_SOURCE" rev-parse HEAD
 
             echo
             echo "## Baseline changes"
