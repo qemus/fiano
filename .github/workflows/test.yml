@@ -6,7 +6,6 @@ on:
       - dev
     paths:
       - ".github/workflows/test.yml"
-      - "Dockerfile"
 
   workflow_dispatch:
     inputs:
