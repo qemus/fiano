@@ -299,7 +299,7 @@ jobs:
 
           trap cleanup EXIT
 
-          rm -rf $source" "$package"
+          rm -rf "$source" "$package"
           mkdir -p "$source" "$package/fiano"
 
           docker buildx build \
