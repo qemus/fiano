@@ -17,6 +17,7 @@ jobs:
       actions: write
       packages: write
       contents: read
+
     steps:
       -
         name: Retrieve latest tags
@@ -47,6 +48,7 @@ jobs:
             }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       -
         name: Parse tags
         run: |
@@ -94,12 +96,14 @@ jobs:
             echo "latest_branch=$latest_branch"
             echo "previous_branch=$previous_branch"
           } >> "$GITHUB_ENV"
+
       -
         name: Check if the tag exists locally
         uses: action-pack/tag-exists@v1
         id: checkTag
         with:
           tag: 'v${{ env.latest_tag }}'
+
       -
         name: Finish when found
         run: |
@@ -107,12 +111,14 @@ jobs:
           set -Eeuo pipefail
 
           echo "exists=${{ steps.checkTag.outputs.exists }}" >> "$GITHUB_ENV"
+
       -
         name: Checkout
         if: env.exists == 'false'
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
       -
         name: Generate release notes
         if: env.exists == 'false'
@@ -196,6 +202,7 @@ jobs:
             cat "$output"
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
+
       -
         name: Lint Dockerfile
         if: env.exists == 'false'
@@ -204,6 +211,7 @@ jobs:
           dockerfile: Dockerfile
           ignore: DL3008,DL3059,DL3018
           failure-threshold: warning
+
       -
         name: Docker metadata
         id: meta
@@ -221,10 +229,12 @@ jobs:
             org.opencontainers.image.title=${{ vars.NAME }}
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+
       -
         name: Set up Docker Buildx
         if: env.exists == 'false'
         uses: docker/setup-buildx-action@v4
+
       -
         name: Build Docker image
         if: env.exists == 'false'
@@ -239,7 +249,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
-            VERSION_ARG=${{ steps.meta.outputs.version }}
+            VERSION_ARG=${{ env.latest_tag }}
+
       -
         name: Rename binaries
         if: env.exists == 'false'
@@ -247,7 +258,7 @@ jobs:
           #!/usr/bin/env bash
           set -Eeuo pipefail
 
-          version="${{ steps.meta.outputs.version }}"
+          version="${latest_tag}"
 
           mv \
             output/linux_amd64/utk.bin \
@@ -260,23 +271,96 @@ jobs:
           rm -rf \
             output/linux_amd64 \
             output/linux_arm64
+
+      -
+        name: Package patched source
+        if: env.exists == 'false'
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          version="${latest_tag}"
+          image="fiano-source:${GITHUB_RUN_ID}"
+          container=""
+          source="/tmp/fiano-source"
+          package="/tmp/fiano-package"
+          archive="module.zip"
+
+          cleanup() {
+
+            if [ -n "$container" ]; then
+              docker rm -f "$container" >/dev/null 2>&1 || true
+            fi
+
+            docker image rm "$image" >/dev/null 2>&1 || true
+
+            rm -rf "$source" "$package"
+          }
+
+          trap cleanup EXIT
+
+          rm -rf $source" "$package"
+          mkdir -p "$source" "$package/fiano"
+
+          docker buildx build \
+            --platform linux/amd64 \
+            --target builder \
+            --build-arg "VERSION_ARG=$version" \
+            --tag "$image" \
+            --load \
+            .
+
+          container=$(docker create "$image")
+
+          docker cp "$container:/src/." "$source/"
+          docker rm "$container"
+
+          container=""
+
+          cp -a "$source/." "$package/fiano/"
+          rm -rf "$package/fiano/.git"
+          rm -f "$package/fiano/utk"
+
+          if [ ! -f "$package/fiano/go.mod" ]; then
+            echo "ERROR: Patched source does not contain go.mod." >&2
+            exit 1
+          fi
+
+          if ! grep -Fxq \
+            "module github.com/linuxboot/fiano" \
+            "$package/fiano/go.mod"; then
+            echo "ERROR: Unexpected module declaration." >&2
+            exit 1
+          fi
+
+          (
+            cd "$package"
+            zip -qr \
+              "${GITHUB_WORKSPACE}/output/$archive" \
+              fiano
+          )
+
+          echo "Created module archive:"
+          ls -lh "output/$archive"
       -
         name: Create a release
         if: env.exists == 'false'
         uses: action-pack/github-release@v2
         with:
           body: ${{ steps.notes.outputs.release_notes }}
-          tag: "v${{ steps.meta.outputs.version }}"
-          title: "v${{ steps.meta.outputs.version }}"
+          tag: "v${{ env.latest_tag }}"
+          title: "v${{ env.latest_tag }}"
           token: ${{ secrets.REPO_ACCESS_TOKEN }}
+
       -
-        name: Add binaries to release
+        name: Add assets to release
         if: env.exists == 'false'
         uses: AButler/upload-release-assets@v4.0
         with:
           files: 'output/*'
-          release-tag: "v${{ steps.meta.outputs.version }}"
+          release-tag: "v${{ env.latest_tag }}"
           repo-token: ${{ secrets.REPO_ACCESS_TOKEN }}
+
       -
         name: Send mail
         if: env.exists == 'false'
@@ -285,8 +369,8 @@ jobs:
           to: ${{ secrets.MAILTO }}
           from: Github Actions <${{ secrets.MAILTO }}>
           connection_url: ${{ secrets.MAIL_CONNECTION }}
-          subject: Build of ${{ github.event.repository.name }} v${{ steps.meta.outputs.version }} completed
+          subject: Build of ${{ github.event.repository.name }} v${{ env.latest_tag }} completed
           body: |
-            The build job of ${{ github.event.repository.name }} v${{ steps.meta.outputs.version }} was completed successfully!
+            The build job of ${{ github.event.repository.name }} v${{ env.latest_tag }} was completed successfully!
 
             See https://github.com/${{ github.repository }}/actions for more information.
