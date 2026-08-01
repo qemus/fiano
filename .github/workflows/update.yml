@@ -1,0 +1,72 @@
+name: Update boot-logo
+
+on:
+  workflow_run:
+    workflows:
+      - Build
+    types:
+      - completed
+
+jobs:
+  dispatch:
+    name: Update boot-logo dependency
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      -
+        name: Checkout module branch
+        uses: actions/checkout@v7
+        with:
+          ref: module
+          fetch-depth: 1
+
+      -
+        name: Check whether module changed
+        id: module
+        env:
+          RUN_STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          commit_time=$(git show -s --format=%cI HEAD)
+          commit_epoch=$(date --date="$commit_time" +%s)
+          started_epoch=$(date --date="$RUN_STARTED_AT" +%s)
+
+          echo "Module commit: $commit_time"
+          echo "Build started: $RUN_STARTED_AT"
+
+          if [ "$commit_epoch" -lt "$started_epoch" ]; then
+            echo "The successful build did not publish a new module commit."
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "updated=true" >> "$GITHUB_OUTPUT"
+
+      -
+        name: Dispatch boot-logo update
+        if: steps.module.outputs.updated == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          response=$(
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --request POST \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/qemus/boot-logo/dispatches \
+              --data '{"event_type":"fiano-module-updated"}'
+          )
+
+          if [ -n "$response" ]; then
+            printf '%s\n' "$response"
+          fi
