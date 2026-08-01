@@ -138,7 +138,7 @@ jobs:
             Dockerfile
 
           grep -Fq \
-            '--branch module' \
+            -e '--branch module' \
             Dockerfile
 
           grep -Fq \
