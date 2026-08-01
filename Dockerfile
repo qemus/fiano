@@ -2,20 +2,18 @@
 
 FROM --platform=$BUILDPLATFORM golang:1.25.7-alpine AS builder
 
-ARG VERSION_ARG="0.0"
+ARG MODULE_COMMIT
 ARG TARGETOS TARGETARCH
 
-COPY lzma-level.patch preserve-unchanged.patch /tmp/
-
 RUN set -eu && \
-    apk --no-cache add \
-    git && \
-    git clone -b "v$VERSION_ARG" https://github.com/linuxboot/fiano.git /src && \
-    git -C /src apply --check /tmp/lzma-level.patch && \
-    git -C /src apply /tmp/lzma-level.patch && \
-    git -C /src apply --recount --check /tmp/preserve-unchanged.patch && \
-    git -C /src apply --recount /tmp/preserve-unchanged.patch && \
-    rm -rf /tmp/* /var/cache/apk/*
+    apk --no-cache add git && \
+    git clone \
+      --branch module \
+      --single-branch \
+      https://github.com/qemus/fiano.git \
+      /src && \
+    git -C /src checkout --detach "$MODULE_COMMIT" && \
+    rm -rf /src/.git /var/cache/apk/*
 
 WORKDIR /src/cmds/utk
 

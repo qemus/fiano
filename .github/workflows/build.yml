@@ -204,68 +204,9 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       -
-        name: Docker metadata
-        id: meta
-        if: env.exists == 'false'
-        uses: docker/metadata-action@v6
-        with:
-          context: git
-          images: |
-            ${{ secrets.DOCKERHUB_REPO }}
-            ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=latest,priority=100
-            type=raw,value=${{ env.latest_tag }}
-          labels: |
-            org.opencontainers.image.title=${{ vars.NAME }}
-        env:
-          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
-
-      -
-        name: Set up Docker Buildx
-        if: env.exists == 'false'
-        uses: docker/setup-buildx-action@v4
-
-      -
-        name: Build Docker image
-        if: env.exists == 'false'
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: false
-          provenance: false
-          outputs: type=local,dest=output
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          annotations: ${{ steps.meta.outputs.annotations }}
-          build-args: |
-            VERSION_ARG=${{ env.latest_tag }}
-
-      -
-        name: Rename binaries
-        if: env.exists == 'false'
-        run: |
-          #!/usr/bin/env bash
-          set -Eeuo pipefail
-
-          version="${latest_tag}"
-
-          mv \
-            output/linux_amd64/utk.bin \
-            "output/utk_${version}_amd64.bin"
-
-          mv \
-            output/linux_arm64/utk.bin \
-            "output/utk_${version}_arm64.bin"
-
-          rm -rf \
-            output/linux_amd64 \
-            output/linux_arm64
-
-      -
         name: Publish patched module branch
         if: env.exists == 'false'
+        id: module
         env:
           REPO_ACCESS_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
         run: |
@@ -273,44 +214,42 @@ jobs:
           set -Eeuo pipefail
 
           version="${latest_tag}"
-          image="fiano-module:${GITHUB_RUN_ID}"
-          container=""
           source="$RUNNER_TEMP/fiano-module-source"
           branch="$RUNNER_TEMP/fiano-module-branch"
+          upstream="https://github.com/linuxboot/fiano.git"
+          repository="https://x-access-token:${REPO_ACCESS_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
           cleanup() {
-
-            if [ -n "$container" ]; then
-              docker rm -f "$container" >/dev/null 2>&1 || true
-            fi
-
-            docker image rm "$image" >/dev/null 2>&1 || true
-
             rm -rf "$source" "$branch"
           }
 
           trap cleanup EXIT
 
           rm -rf "$source" "$branch"
-          mkdir -p "$source"
 
-          docker buildx build \
-            --platform linux/amd64 \
-            --target builder \
-            --build-arg "VERSION_ARG=$version" \
-            --tag "$image" \
-            --load \
-            .
+          git clone \
+            --branch "v${version}" \
+            --depth 1 \
+            "$upstream" \
+            "$source"
 
-          container=$(docker create "$image")
+          git -C "$source" apply \
+            --check \
+            "$GITHUB_WORKSPACE/lzma-level.patch"
 
-          docker cp "$container:/src/." "$source/"
-          docker rm "$container"
+          git -C "$source" apply \
+            "$GITHUB_WORKSPACE/lzma-level.patch"
 
-          container=""
+          git -C "$source" apply \
+            --recount \
+            --check \
+            "$GITHUB_WORKSPACE/preserve-unchanged.patch"
+
+          git -C "$source" apply \
+            --recount \
+            "$GITHUB_WORKSPACE/preserve-unchanged.patch"
 
           rm -rf "$source/.git"
-          rm -f "$source/utk"
 
           if [ ! -f "$source/go.mod" ]; then
             echo "ERROR: Patched source does not contain go.mod." >&2
@@ -323,8 +262,6 @@ jobs:
             echo "ERROR: Unexpected module declaration." >&2
             exit 1
           fi
-
-          repository="https://x-access-token:${REPO_ACCESS_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
           if git ls-remote \
             --exit-code \
@@ -361,18 +298,95 @@ jobs:
 
           git -C "$branch" add --all
 
-          if git -C "$branch" diff --cached --quiet; then
+          changed=false
+
+          if ! git -C "$branch" diff --cached --quiet; then
+            git -C "$branch" commit \
+              -m "Publish patched Fiano v${version}"
+
+            git -C "$branch" push origin module
+            changed=true
+          else
             echo "The module branch already contains this patched source."
-            exit 0
           fi
 
-          git -C "$branch" commit \
-            -m "Publish patched Fiano v${version}"
+          module_commit=$(git -C "$branch" rev-parse HEAD)
 
-          git -C "$branch" push origin module
+          {
+            echo "commit=$module_commit"
+            echo "changed=$changed"
+          } >> "$GITHUB_OUTPUT"
 
-          echo "Published patched source to the module branch:"
-          git -C "$branch" rev-parse HEAD
+          echo "Using patched module commit: $module_commit"
+
+      -
+        name: Lint Dockerfile
+        if: env.exists == 'false'
+        uses: hadolint/hadolint-action@v3.4.0
+        with:
+          dockerfile: Dockerfile
+          ignore: DL3008,DL3059,DL3018
+          failure-threshold: warning
+
+      -
+        name: Docker metadata
+        id: meta
+        if: env.exists == 'false'
+        uses: docker/metadata-action@v6
+        with:
+          context: git
+          images: |
+            ${{ secrets.DOCKERHUB_REPO }}
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,priority=100
+            type=raw,value=${{ env.latest_tag }}
+          labels: |
+            org.opencontainers.image.title=${{ vars.NAME }}
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+
+      -
+        name: Set up Docker Buildx
+        if: env.exists == 'false'
+        uses: docker/setup-buildx-action@v4
+
+      -
+        name: Build Docker image
+        if: env.exists == 'false'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          provenance: false
+          outputs: type=local,dest=output
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: |
+            MODULE_COMMIT=${{ steps.module.outputs.commit }}
+
+      -
+        name: Rename binaries
+        if: env.exists == 'false'
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          version="${latest_tag}"
+
+          mv \
+            output/linux_amd64/utk.bin \
+            "output/utk_${version}_amd64.bin"
+
+          mv \
+            output/linux_arm64/utk.bin \
+            "output/utk_${version}_arm64.bin"
+
+          rm -rf \
+            output/linux_amd64 \
+            output/linux_arm64
 
       - 
         name: Create a release
