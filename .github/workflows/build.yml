@@ -272,77 +272,7 @@ jobs:
             output/linux_amd64 \
             output/linux_arm64
 
-      -
-        name: Package patched source
-        if: env.exists == 'false'
-        run: |
-          #!/usr/bin/env bash
-          set -Eeuo pipefail
-
-          version="${latest_tag}"
-          image="fiano-source:${GITHUB_RUN_ID}"
-          container=""
-          source="/tmp/fiano-source"
-          package="/tmp/fiano-package"
-          archive="module.zip"
-
-          cleanup() {
-
-            if [ -n "$container" ]; then
-              docker rm -f "$container" >/dev/null 2>&1 || true
-            fi
-
-            docker image rm "$image" >/dev/null 2>&1 || true
-
-            rm -rf "$source" "$package"
-          }
-
-          trap cleanup EXIT
-
-          rm -rf "$source" "$package"
-          mkdir -p "$source" "$package/fiano"
-
-          docker buildx build \
-            --platform linux/amd64 \
-            --target builder \
-            --build-arg "VERSION_ARG=$version" \
-            --tag "$image" \
-            --load \
-            .
-
-          container=$(docker create "$image")
-
-          docker cp "$container:/src/." "$source/"
-          docker rm "$container"
-
-          container=""
-
-          cp -a "$source/." "$package/fiano/"
-          rm -rf "$package/fiano/.git"
-          rm -f "$package/fiano/utk"
-
-          if [ ! -f "$package/fiano/go.mod" ]; then
-            echo "ERROR: Patched source does not contain go.mod." >&2
-            exit 1
-          fi
-
-          if ! grep -Fxq \
-            "module github.com/linuxboot/fiano" \
-            "$package/fiano/go.mod"; then
-            echo "ERROR: Unexpected module declaration." >&2
-            exit 1
-          fi
-
-          (
-            cd "$package"
-            zip -qr \
-              "${GITHUB_WORKSPACE}/output/$archive" \
-              fiano
-          )
-
-          echo "Created module archive:"
-          ls -lh "output/$archive"
-      -
+      - 
         name: Create a release
         if: env.exists == 'false'
         uses: action-pack/github-release@v2
