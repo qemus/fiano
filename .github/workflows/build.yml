@@ -2,8 +2,6 @@ name: Build
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * *'
 
 concurrency:
   group: build
@@ -20,89 +18,27 @@ jobs:
 
     steps:
       -
-        name: Retrieve latest tags
-        uses: octokit/graphql-action@v2.x
-        id: tags
-        with:
-          variables: |
-            repo: ${{ github.event.repository.name }}
-            owner: linuxboot
-          query: |
-            query tags($owner: String!, $repo: String!) {
-              repository(owner: $owner, name: $repo) {
-                refs(
-                  refPrefix: "refs/tags/"
-                  last: 2
-                  orderBy: {
-                    field: TAG_COMMIT_DATE
-                    direction: ASC
-                  }
-                ) {
-                  edges {
-                    node {
-                      name
-                    }
-                  }
-                }
-              }
-            }
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      -
-        name: Parse tags
+        name: Set version
         run: |
           #!/usr/bin/env bash
           set -Eeuo pipefail
 
-          mapfile -t tags < <(
-            jq -er \
-              '.repository.refs.edges[].node.name' \
-              <<< '${{ steps.tags.outputs.data }}'
-          )
+          version="${{ vars.MAJOR }}.${{ vars.MINOR }}"
 
-          count=${#tags[@]}
-
-          if [ "$count" -eq 0 ]; then
-            echo "ERROR: No upstream tags were found." >&2
+          if [ -z "${{ vars.MAJOR }}" ] || [ -z "${{ vars.MINOR }}" ]; then
+            echo "ERROR: MAJOR and MINOR repository variables must be set." >&2
             exit 1
           fi
 
-          latest_index=$((count - 1))
-          latest_branch=${tags[$latest_index]}
-          latest_tag=${latest_branch#v}
-
-          previous_branch=""
-
-          if [ "$count" -gt 1 ]; then
-            previous_index=$((count - 2))
-            previous_branch=${tags[$previous_index]}
-          fi
-
-          if [ -z "$latest_tag" ]; then
-            echo "ERROR: Tag not found." >&2
-            exit 1
-          fi
-
-          echo "Found tag: \"$latest_tag\""
-          echo "Upstream tag: \"$latest_branch\""
-
-          if [ -n "$previous_branch" ]; then
-            echo "Previous upstream tag: \"$previous_branch\""
-          fi
-
-          {
-            echo "latest_tag=$latest_tag"
-            echo "latest_branch=$latest_branch"
-            echo "previous_branch=$previous_branch"
-          } >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_ENV"
+          echo "Building version: $version"
 
       -
         name: Check if the tag exists locally
         uses: action-pack/tag-exists@v1
         id: checkTag
         with:
-          tag: 'v${{ env.latest_tag }}'
+          tag: 'v${{ env.version }}'
 
       -
         name: Finish when found
@@ -120,88 +56,36 @@ jobs:
           fetch-depth: 0
 
       -
-        name: Generate release notes
+        name: Resolve module commit
         if: env.exists == 'false'
-        id: notes
-        env:
-          LATEST_BRANCH: ${{ env.latest_branch }}
-          PREVIOUS_BRANCH: ${{ env.previous_branch }}
+        id: module
         run: |
           #!/usr/bin/env bash
           set -Eeuo pipefail
 
-          repository="https://github.com/linuxboot/${{ github.event.repository.name }}.git"
-          source="/tmp/fiano"
-          output="/tmp/release-notes.md"
+          module_commit=$(
+            git ls-remote \
+              "https://github.com/${GITHUB_REPOSITORY}.git" \
+              refs/heads/module \
+              | awk 'NR == 1 { print $1 }'
+          )
 
-          latest_tag=${LATEST_BRANCH#v}
-          previous_tag=${PREVIOUS_BRANCH#v}
-
-          rm -rf "$source"
-
-          git clone \
-            --quiet \
-            --filter=blob:none \
-            --no-checkout \
-            "$repository" \
-            "$source"
-
-          if ! git -C "$source" rev-parse \
-            --verify \
-            --quiet \
-            "refs/tags/$LATEST_BRANCH^{commit}" \
-            >/dev/null; then
-            echo "ERROR: Upstream tag not found: $LATEST_BRANCH" >&2
+          if [ -z "$module_commit" ]; then
+            echo "ERROR: The module branch was not found." >&2
             exit 1
           fi
 
-          {
-            echo "## Changes"
-            echo
-            echo "**$latest_tag**"
+          echo "commit=$module_commit" >> "$GITHUB_OUTPUT"
+          echo "Using module commit: $module_commit"
 
-            if [ -n "$PREVIOUS_BRANCH" ]; then
-              if ! git -C "$source" rev-parse \
-                --verify \
-                --quiet \
-                "refs/tags/$PREVIOUS_BRANCH^{commit}" \
-                >/dev/null; then
-                echo "ERROR: Previous upstream tag not found: $PREVIOUS_BRANCH" >&2
-                exit 1
-              fi
-
-              echo
-              echo "Changes since \`$previous_tag\`:"
-              echo
-
-              changes=$(
-                git -C "$source" log \
-                  --no-merges \
-                  --reverse \
-                  --format='- %s' \
-                  "$PREVIOUS_BRANCH..$LATEST_BRANCH"
-              )
-
-              if [ -n "$changes" ]; then
-                echo "$changes"
-              else
-                echo "- No changes were listed."
-              fi
-            else
-              echo
-              echo "- Initial packaged release."
-            fi
-          } > "$output"
-
-          cat "$output"
-
-          delimiter="RELEASE_NOTES_$(date +%s%N)"
-
-          {
-            echo "release_notes<<$delimiter"
-            cat "$output"
-            echo "$delimiter"
-          } >> "$GITHUB_OUTPUT"
+      -
+        name: Lint Dockerfile
+        if: env.exists == 'false'
+        uses: hadolint/hadolint-action@v3.4.0
+        with:
+          dockerfile: Dockerfile
+          ignore: DL3008,DL3059,DL3018
+          failure-threshold: warning
 
       -
         name: Docker metadata
@@ -215,7 +99,7 @@ jobs:
             ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,priority=100
-            type=raw,value=${{ env.latest_tag }}
+            type=raw,value=${{ vars.MAJOR }}.${{ vars.MINOR }}
           labels: |
             org.opencontainers.image.title=${{ vars.NAME }}
         env:
@@ -227,7 +111,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       -
-        name: Build Docker image
+        name: Build binaries
         if: env.exists == 'false'
         uses: docker/build-push-action@v7
         with:
@@ -240,7 +124,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
-            VERSION_ARG=${{ env.latest_tag }}
+            MODULE_COMMIT=${{ steps.module.outputs.commit }}
 
       -
         name: Rename binaries
@@ -249,139 +133,25 @@ jobs:
           #!/usr/bin/env bash
           set -Eeuo pipefail
 
-          version="${latest_tag}"
-
           mv \
             output/linux_amd64/utk.bin \
-            "output/utk_${version}_amd64.bin"
+            "output/utk_${{ steps.meta.outputs.version }}_amd64.bin"
 
           mv \
             output/linux_arm64/utk.bin \
-            "output/utk_${version}_arm64.bin"
+            "output/utk_${{ steps.meta.outputs.version }}_arm64.bin"
 
           rm -rf \
             output/linux_amd64 \
             output/linux_arm64
 
       -
-        name: Publish patched module branch
-        if: env.exists == 'false'
-        env:
-          REPO_ACCESS_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
-        run: |
-          #!/usr/bin/env bash
-          set -Eeuo pipefail
-
-          version="${latest_tag}"
-          image="fiano-module:${GITHUB_RUN_ID}"
-          container=""
-          source="$RUNNER_TEMP/fiano-module-source"
-          branch="$RUNNER_TEMP/fiano-module-branch"
-
-          cleanup() {
-
-            if [ -n "$container" ]; then
-              docker rm -f "$container" >/dev/null 2>&1 || true
-            fi
-
-            docker image rm "$image" >/dev/null 2>&1 || true
-
-            rm -rf "$source" "$branch"
-          }
-
-          trap cleanup EXIT
-
-          rm -rf "$source" "$branch"
-          mkdir -p "$source"
-
-          docker buildx build \
-            --platform linux/amd64 \
-            --target builder \
-            --build-arg "VERSION_ARG=$version" \
-            --tag "$image" \
-            --load \
-            .
-
-          container=$(docker create "$image")
-
-          docker cp "$container:/src/." "$source/"
-          docker rm "$container"
-
-          container=""
-
-          rm -rf "$source/.git"
-          rm -f "$source/utk"
-
-          if [ ! -f "$source/go.mod" ]; then
-            echo "ERROR: Patched source does not contain go.mod." >&2
-            exit 1
-          fi
-
-          if ! grep -Fxq \
-            "module github.com/linuxboot/fiano" \
-            "$source/go.mod"; then
-            echo "ERROR: Unexpected module declaration." >&2
-            exit 1
-          fi
-
-          repository="https://x-access-token:${REPO_ACCESS_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-
-          if git ls-remote \
-            --exit-code \
-            --heads \
-            "$repository" \
-            module >/dev/null 2>&1; then
-
-            git clone \
-              --branch module \
-              --single-branch \
-              "$repository" \
-              "$branch"
-          else
-            git clone \
-              --no-checkout \
-              "$repository" \
-              "$branch"
-
-            git -C "$branch" checkout --orphan module
-            git -C "$branch" rm -rf . >/dev/null 2>&1 || true
-          fi
-
-          find "$branch" \
-            -mindepth 1 \
-            -maxdepth 1 \
-            ! -name .git \
-            -exec rm -rf {} +
-
-          cp -a "$source/." "$branch/"
-
-          git -C "$branch" config user.name "github-actions[bot]"
-          git -C "$branch" config user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git -C "$branch" add --all
-
-          if git -C "$branch" diff --cached --quiet; then
-            echo "The module branch already contains this patched source."
-            exit 0
-          fi
-
-          git -C "$branch" commit \
-            -m "Publish patched Fiano v${version}"
-
-          git -C "$branch" push origin module
-
-          echo "Published patched source to the module branch:"
-          git -C "$branch" rev-parse HEAD
-
-      - 
         name: Create a release
         if: env.exists == 'false'
         uses: action-pack/github-release@v2
         with:
-          body: ${{ steps.notes.outputs.release_notes }}
-          tag: "v${{ env.latest_tag }}"
-          title: "v${{ env.latest_tag }}"
+          tag: "v${{ steps.meta.outputs.version }}"
+          title: "v${{ steps.meta.outputs.version }}"
           token: ${{ secrets.REPO_ACCESS_TOKEN }}
 
       -
@@ -390,8 +160,15 @@ jobs:
         uses: AButler/upload-release-assets@v4.0
         with:
           files: 'output/*'
-          release-tag: "v${{ env.latest_tag }}"
+          release-tag: "v${{ steps.meta.outputs.version }}"
           repo-token: ${{ secrets.REPO_ACCESS_TOKEN }}
+
+      -
+        name: Increment version variable
+        if: env.exists == 'false'
+        uses: action-pack/bump@v2
+        with:
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
 
       -
         name: Send mail
@@ -401,8 +178,8 @@ jobs:
           to: ${{ secrets.MAILTO }}
           from: Github Actions <${{ secrets.MAILTO }}>
           connection_url: ${{ secrets.MAIL_CONNECTION }}
-          subject: Build of ${{ github.event.repository.name }} v${{ env.latest_tag }} completed
+          subject: Build of ${{ github.event.repository.name }} v${{ steps.meta.outputs.version }} completed
           body: |
-            The build job of ${{ github.event.repository.name }} v${{ env.latest_tag }} was completed successfully!
+            The build job of ${{ github.event.repository.name }} v${{ steps.meta.outputs.version }} was completed successfully!
 
             See https://github.com/${{ github.repository }}/actions for more information.
