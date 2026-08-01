@@ -10,7 +10,7 @@
 
 </div></h1>
 
-A maintained fork of [Fiano](https://github.com/linuxboot/fiano) with some extra features.
+A maintained fork of [Fiano](https://github.com/linuxboot/fiano) with some additional features.
 
 ## Features ✨
 
