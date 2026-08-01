@@ -573,27 +573,29 @@ jobs:
           	file.Header.Type = uefi.FVFileTypeDriver
           	file.Header.SetState(uefi.FileStateValid)
 
+          	const volumeLength = uint64(16 * 4096)
+          	const headerLength = uint16(56)
+
           	fv := &uefi.FirmwareVolume{
-          		FileSystemGUID: *uefi.FFS2,
-          		Signature: binary.LittleEndian.Uint32(
-          			[]byte("_FVH"),
-          		),
-          		Attributes: 0x0004FEFF,
-          		Revision:   2,
+          		FirmwareVolumeFixedHeader: uefi.FirmwareVolumeFixedHeader{
+          			FileSystemGUID: *uefi.FFS2,
+          			Length:         volumeLength,
+          			Signature: binary.LittleEndian.Uint32(
+          				[]byte("_FVH"),
+          			),
+          			Attributes: 0x0004FEFF,
+          			HeaderLen:  headerLength,
+          			Revision:   2,
+          		},
           		Blocks: []uefi.Block{
           			{
           				Count: 16,
           				Size:  4096,
           			},
-          			{
-          				Count: 0,
-          				Size:  0,
-          			},
+          			{},
           		},
-          		HeaderLen:  56,
-          		DataOffset: 56,
-          		Length:     16 * 4096,
-          		FreeSpace:  16*4096 - 56,
+          		DataOffset: uint64(headerLength),
+          		FreeSpace:  volumeLength - uint64(headerLength),
           		Resizable:  true,
           		Files: []*uefi.File{
           			file,
