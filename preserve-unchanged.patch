@@ -10,7 +10,7 @@ diff --git a/pkg/uefi/biosregion.go b/pkg/uefi/biosregion.go
 +	Parsed     bool `json:"-"`
 +	Modified   bool `json:"-"`
  }
- 
+
  // Type returns the flash region type.
 @@ -75,6 +77,7 @@ func (br *BIOSRegion) Buf() []byte {
  // Used mostly for things interacting with the Firmware interface.
@@ -18,7 +18,7 @@ diff --git a/pkg/uefi/biosregion.go b/pkg/uefi/biosregion.go
  	br.buf = buf
 +	br.Modified = true
  }
- 
+
  // Apply calls the visitor on the BIOSRegion.
 @@ -91,7 +94,7 @@ func (br *BIOSRegion) FirstFV() (*FirmwareVolume, error) {
  // object, if a valid one is passed, or an error. It also points to the
@@ -28,7 +28,7 @@ diff --git a/pkg/uefi/biosregion.go b/pkg/uefi/biosregion.go
 -		RegionType: RegionTypeBIOS}
 +		RegionType: RegionTypeBIOS, Parsed: true}
  	var absOffset uint64
- 
+
  	// Copy the buffer
 diff --git a/pkg/uefi/file.go b/pkg/uefi/file.go
 --- a/pkg/uefi/file.go
@@ -41,7 +41,7 @@ diff --git a/pkg/uefi/file.go b/pkg/uefi/file.go
 +	Parsed      bool `json:"-"`
 +	Modified    bool `json:"-"`
  }
- 
+
  // Buf returns the buffer.
 @@ -269,6 +271,7 @@ func (f *File) Buf() []byte {
  // Used mostly for things interacting with the Firmware interface.
@@ -49,7 +49,7 @@ diff --git a/pkg/uefi/file.go b/pkg/uefi/file.go
  	f.buf = buf
 +	f.Modified = true
  }
- 
+
  // Apply calls the visitor on the File.
 @@ -419,7 +422,7 @@ func CreatePadFile(size uint64) (*File, error) {
  // object, if a valid one is passed, or an error. If no error is returned and the File
@@ -70,7 +70,7 @@ diff --git a/pkg/uefi/firmwarevolume.go b/pkg/uefi/firmwarevolume.go
 +	Parsed      bool   `json:"-"`
 +	Modified    bool   `json:"-"`
  }
- 
+
  // Buf returns the buffer.
 @@ -121,6 +123,7 @@ func (fv *FirmwareVolume) Buf() []byte {
  // Used mostly for things interacting with the Firmware interface.
@@ -78,16 +78,16 @@ diff --git a/pkg/uefi/firmwarevolume.go b/pkg/uefi/firmwarevolume.go
  	fv.buf = buf
 +	fv.Modified = true
  }
- 
+
  // Apply calls the visitor on the FirmwareVolume.
 @@ -207,7 +210,7 @@ func FindFirmwareVolumeOffset(data []byte) int64 {
- 
+
  // NewFirmwareVolume parses a sequence of bytes and returns a FirmwareVolume
  // object, if a valid one is passed, or an error
  func NewFirmwareVolume(data []byte, fvOffset uint64, resizable bool) (*FirmwareVolume, error) {
 -	fv := FirmwareVolume{Resizable: resizable}
 +	fv := FirmwareVolume{Resizable: resizable, Parsed: true}
- 
+
  	if len(data) < FirmwareVolumeMinSize {
  		return nil, fmt.Errorf("Firmware Volume size too small: expected %v bytes, got %v",
 diff --git a/pkg/uefi/nvram.go b/pkg/uefi/nvram.go
@@ -100,7 +100,7 @@ diff --git a/pkg/uefi/nvram.go b/pkg/uefi/nvram.go
 +	Parsed      bool  `json:"-"`
 +	Modified    bool  `json:"-"`
  }
- 
+
  // String returns the String value of the NVAR: Type and Name if valid
 @@ -135,6 +137,7 @@ func (v *NVar) Buf() []byte {
  // Used mostly for things interacting with the Firmware interface.
@@ -108,7 +108,7 @@ diff --git a/pkg/uefi/nvram.go b/pkg/uefi/nvram.go
  	v.buf = buf
 +	v.Modified = true
  }
- 
+
  // Apply calls the visitor on the NVar.
 @@ -160,6 +163,8 @@ type NVarStore struct {
  	FreeSpaceOffset uint64
@@ -117,7 +117,7 @@ diff --git a/pkg/uefi/nvram.go b/pkg/uefi/nvram.go
 +	Parsed          bool `json:"-"`
 +	Modified        bool `json:"-"`
  }
- 
+
  // Buf returns the buffer.
 @@ -174,6 +179,7 @@ func (s *NVarStore) Buf() []byte {
  // Used mostly for things interacting with the Firmware interface.
@@ -125,12 +125,12 @@ diff --git a/pkg/uefi/nvram.go b/pkg/uefi/nvram.go
  	s.buf = buf
 +	s.Modified = true
  }
- 
+
  // Apply calls the visitor on the NVarStore.
 @@ -393,7 +399,7 @@ func newNVar(buf []byte, offset uint64, s *NVarStore) (*NVar, error) {
  		return nil, nil
  	}
- 
+
 -	v := NVar{Type: FullNVarEntry, Offset: offset}
 +	v := NVar{Type: FullNVarEntry, Offset: offset, Parsed: true}
  	// read the header and check for existing NVAR
@@ -142,20 +142,20 @@ diff --git a/pkg/uefi/nvram.go b/pkg/uefi/nvram.go
  func NewNVarStore(buf []byte) (*NVarStore, error) {
 -	s := NVarStore{}
 +	s := NVarStore{Parsed: true}
- 
+
  	// Copy out the buffer.
  	s.buf = make([]byte, len(buf))
 diff --git a/pkg/uefi/section.go b/pkg/uefi/section.go
 --- a/pkg/uefi/section.go
 +++ b/pkg/uefi/section.go
 @@ -204,7 +204,9 @@ type Section struct {
- 
+
  	// Encapsulated firmware
  	Encapsulated []*TypedFirmware `json:",omitempty"`
 +	Parsed       bool             `json:"-"`
 +	Modified     bool             `json:"-"`
  }
- 
+
  // String returns the String value of the section if it makes sense,
 @@ -236,6 +238,7 @@ func (s *Section) Buf() []byte {
  // Used mostly for things interacting with the Firmware interface.
@@ -163,10 +163,10 @@ diff --git a/pkg/uefi/section.go b/pkg/uefi/section.go
  	s.buf = buf
 +	s.Modified = true
  }
- 
+
  // Apply calls the visitor on the Section.
 @@ -331,7 +334,7 @@ func (s *Section) GenSecHeader() error {
- 
+
  // NewSection parses a sequence of bytes and returns a Section
  // object, if a valid one is passed, or an error.
  func NewSection(buf []byte, fileOrder int) (*Section, error) {
@@ -184,12 +184,12 @@ diff --git a/pkg/visitors/assemble.go b/pkg/visitors/assemble.go
  	useFFS3 bool
 +	prepared bool
  }
- 
+
  // Run just applies the visitor.
 @@ -36,6 +37,88 @@ func (v *Assemble) Run(f uefi.Firmware) error {
  	return f.Apply(v)
  }
- 
+
 +func needsAssembly(f uefi.Firmware) bool {
 +	switch f := f.(type) {
 +	case *uefi.BIOSRegion:
@@ -279,18 +279,18 @@ diff --git a/pkg/visitors/assemble.go b/pkg/visitors/assemble.go
 +	}
 +
  	var err error
- 
+
  	// Get the damn Erase Polarity
 @@ -55,6 +138,10 @@ func (v *Assemble) Visit(f uefi.Firmware) error {
  		return err
  	}
- 
+
 +	if !needsAssembly(f) {
 +		return nil
 +	}
 +
  	switch f := f.(type) {
- 
+
  	case *uefi.FirmwareVolume:
 diff --git a/pkg/visitors/createfv.go b/pkg/visitors/createfv.go
 --- a/pkg/visitors/createfv.go
@@ -302,7 +302,50 @@ diff --git a/pkg/visitors/createfv.go b/pkg/visitors/createfv.go
 +	br.Modified = true
  	return nil
  }
- 
+
+diff --git a/pkg/visitors/flatten.go b/pkg/visitors/flatten.go
+--- a/pkg/visitors/flatten.go
++++ b/pkg/visitors/flatten.go
+@@ -35,20 +35,30 @@ func (v *Flatten) Run(f uefi.Firmware) error {
+ 	}
+
+ 	// Remove children otherwise the output contains many duplicates of each node.
+-	for _, f := range v.List {
+-		switch f := f.Value.(type) {
++	// Work on shallow copies so flatten remains a read-only CLI operation.
++	for i := range v.List {
++		switch f := v.List[i].Value.(type) {
+ 		case *uefi.BIOSRegion:
+-			f.Elements = nil
++			clone := *f
++			clone.Elements = nil
++			v.List[i].Value = &clone
+ 		case *uefi.File:
+-			f.Sections = nil
++			clone := *f
++			clone.Sections = nil
++			v.List[i].Value = &clone
+ 		case *uefi.FirmwareVolume:
+-			f.Files = nil
++			clone := *f
++			clone.Files = nil
++			v.List[i].Value = &clone
+ 		case *uefi.FlashImage:
++			clone := *f
+ 			// TODO: Cannot remove IFD
+-			// f.IFD = nil
+-			f.Regions = nil
++			// clone.IFD = nil
++			clone.Regions = nil
++			v.List[i].Value = &clone
+ 		case *uefi.Section:
+-			f.Encapsulated = nil
++			clone := *f
++			clone.Encapsulated = nil
++			v.List[i].Value = &clone
+ 		}
+ 	}
+
 diff --git a/pkg/visitors/insert.go b/pkg/visitors/insert.go
 --- a/pkg/visitors/insert.go
 +++ b/pkg/visitors/insert.go
@@ -342,7 +385,7 @@ diff --git a/pkg/visitors/nvramcompact.go b/pkg/visitors/nvramcompact.go
  	s.Entries = newEntries
  	s.GUIDStore = guidStore
 +	s.Modified = true
- 
+
  	// Assemble the tree just to make sure things are right
  	// It will do the mandatory second Assemble of NVar and update the Offsets
 diff --git a/pkg/visitors/remove.go b/pkg/visitors/remove.go
@@ -353,7 +396,7 @@ diff --git a/pkg/visitors/remove.go b/pkg/visitors/remove.go
  				if f.Files[i] == m {
  					originalList := append([]*uefi.File{}, f.Files...)
 +					originalModified := f.Modified
- 
+
  					m := m.(*uefi.File)
  					if v.Pad || m.Header.Type == uefi.FVFileTypePEIM {
 @@ -101,6 +102,7 @@ func (v *Remove) Visit(f uefi.Firmware) error {
@@ -362,7 +405,7 @@ diff --git a/pkg/visitors/remove.go b/pkg/visitors/remove.go
  					}
 +					f.Modified = true
  					v.printf("Remove: %d files now\n", len(f.Files))
- 
+
  					// Creates a stack of undoes in case there are multiple FVs.
 @@ -109,6 +111,7 @@ func (v *Remove) Visit(f uefi.Firmware) error {
  					v.Undo = func() {
@@ -383,9 +426,132 @@ diff --git a/pkg/visitors/repack.go b/pkg/visitors/repack.go
  	return nil
  }
 @@ -153,6 +154,7 @@ func repackFV(fv *uefi.FirmwareVolume) error {
- 
+
  	// Set new file as the only firmware file in the original fv.
  	fv.Files = append([]*uefi.File{}, file)
 +	fv.Modified = true
  	return nil
  }
+diff --git a/pkg/visitors/tightenme.go b/pkg/visitors/tightenme.go
+--- a/pkg/visitors/tightenme.go
++++ b/pkg/visitors/tightenme.go
+@@ -103,6 +103,7 @@ func (v *TightenME) process() error {
+ 	v.br.Elements = append([]*uefi.TypedFirmware{uefi.MakeTyped(bp)}, v.br.Elements...)
+ 	// Assemble will regenerate IFD so regions will be updated in the image
++	v.br.Modified = true
+
+ 	return nil
+ }
+diff --git a/pkg/visitors/preserve_test.go b/pkg/visitors/preserve_test.go
+new file mode 100644
+--- /dev/null
++++ b/pkg/visitors/preserve_test.go
+@@ -0,0 +1,104 @@
++// Copyright 2026 the LinuxBoot Authors. All rights reserved
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package visitors
++
++import (
++	"testing"
++
++	"github.com/linuxboot/fiano/pkg/uefi"
++)
++
++func TestSetBufMarksModified(t *testing.T) {
++	br := &uefi.BIOSRegion{}
++	br.SetBuf(nil)
++	if !br.Modified {
++		t.Error("BIOSRegion.SetBuf did not mark the region modified")
++	}
++
++	fv := &uefi.FirmwareVolume{}
++	fv.SetBuf(nil)
++	if !fv.Modified {
++		t.Error("FirmwareVolume.SetBuf did not mark the volume modified")
++	}
++
++	file := &uefi.File{}
++	file.SetBuf(nil)
++	if !file.Modified {
++		t.Error("File.SetBuf did not mark the file modified")
++	}
++
++	section := &uefi.Section{}
++	section.SetBuf(nil)
++	if !section.Modified {
++		t.Error("Section.SetBuf did not mark the section modified")
++	}
++
++	store := &uefi.NVarStore{}
++	store.SetBuf(nil)
++	if !store.Modified {
++		t.Error("NVarStore.SetBuf did not mark the store modified")
++	}
++
++	nvar := &uefi.NVar{}
++	nvar.SetBuf(nil)
++	if !nvar.Modified {
++		t.Error("NVar.SetBuf did not mark the variable modified")
++	}
++}
++
++func TestPropagateModified(t *testing.T) {
++	section := &uefi.Section{Parsed: true, Modified: true}
++	file := &uefi.File{
++		Parsed:   true,
++		Sections: []*uefi.Section{section},
++	}
++	fv := &uefi.FirmwareVolume{
++		Parsed: true,
++		Files:  []*uefi.File{file},
++	}
++	br := &uefi.BIOSRegion{
++		Parsed:   true,
++		Elements: []*uefi.TypedFirmware{uefi.MakeTyped(fv)},
++	}
++
++	if !propagateModified(br) {
++		t.Fatal("modified descendant did not mark the root for assembly")
++	}
++
++	if !file.Modified || !fv.Modified || !br.Modified {
++		t.Fatalf(
++			"modified state was not propagated: file=%t fv=%t bios=%t",
++			file.Modified,
++			fv.Modified,
++			br.Modified,
++		)
++	}
++}
++
++func TestFlattenDoesNotMutateFirmware(t *testing.T) {
++	inner := &uefi.Section{}
++	section := &uefi.Section{
++		Encapsulated: []*uefi.TypedFirmware{uefi.MakeTyped(inner)},
++	}
++	file := &uefi.File{Sections: []*uefi.Section{section}}
++	fv := &uefi.FirmwareVolume{Files: []*uefi.File{file}}
++	br := &uefi.BIOSRegion{
++		Elements: []*uefi.TypedFirmware{uefi.MakeTyped(fv)},
++	}
++
++	v := &Flatten{}
++	if err := v.Run(br); err != nil {
++		t.Fatalf("Flatten.Run failed: %v", err)
++	}
++
++	if len(br.Elements) != 1 {
++		t.Fatalf("flatten modified BIOSRegion.Elements: got %d", len(br.Elements))
++	}
++	if len(fv.Files) != 1 {
++		t.Fatalf("flatten modified FirmwareVolume.Files: got %d", len(fv.Files))
++	}
++	if len(file.Sections) != 1 {
++		t.Fatalf("flatten modified File.Sections: got %d", len(file.Sections))
++	}
++	if len(section.Encapsulated) != 1 {
++		t.Fatalf("flatten modified Section.Encapsulated: got %d", len(section.Encapsulated))
++	}
++}
