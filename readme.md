@@ -14,8 +14,7 @@ A maintained fork of [Fiano](https://github.com/linuxboot/fiano) that provides p
 
 ## Features ✨
 
-- Provides prebuilt Fiano binaries
-- Includes `utk` for modifying UEFI firmware images
+- Prebuilt `utk` binary for modifying UEFI firmware images
 - Supports inspecting firmware contents in table or JSON format
 - Supports extracting and rebuilding firmware images
 - Supports inserting, removing, dumping, and replacing EFI files
