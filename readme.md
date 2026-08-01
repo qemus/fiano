@@ -10,7 +10,7 @@
 
 </div></h1>
 
-A maintained fork of [Fiano](https://github.com/linuxboot/fiano) that provides prebuilt multi-platform binaries and additional features for modifying UEFI firmware.
+A maintained fork of [Fiano](https://github.com/linuxboot/fiano) with some extra features.
 
 ## Features ✨
 
