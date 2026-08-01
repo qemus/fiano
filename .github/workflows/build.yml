@@ -16,7 +16,7 @@ jobs:
     permissions:
       actions: write
       packages: write
-      contents: read
+      contents: write
 
     steps:
       -
@@ -271,6 +271,117 @@ jobs:
           rm -rf \
             output/linux_amd64 \
             output/linux_arm64
+
+      -
+        name: Publish patched module branch
+        if: env.exists == 'false'
+        env:
+          REPO_ACCESS_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          version="${latest_tag}"
+          image="fiano-module:${GITHUB_RUN_ID}"
+          container=""
+          source="$RUNNER_TEMP/fiano-module-source"
+          branch="$RUNNER_TEMP/fiano-module-branch"
+
+          cleanup() {
+
+            if [ -n "$container" ]; then
+              docker rm -f "$container" >/dev/null 2>&1 || true
+            fi
+
+            docker image rm "$image" >/dev/null 2>&1 || true
+
+            rm -rf "$source" "$branch"
+          }
+
+          trap cleanup EXIT
+
+          rm -rf "$source" "$branch"
+          mkdir -p "$source"
+
+          docker buildx build \
+            --platform linux/amd64 \
+            --target builder \
+            --build-arg "VERSION_ARG=$version" \
+            --tag "$image" \
+            --load \
+            .
+
+          container=$(docker create "$image")
+
+          docker cp "$container:/src/." "$source/"
+          docker rm "$container"
+
+          container=""
+
+          rm -rf "$source/.git"
+          rm -f "$source/utk"
+
+          if [ ! -f "$source/go.mod" ]; then
+            echo "ERROR: Patched source does not contain go.mod." >&2
+            exit 1
+          fi
+
+          if ! grep -Fxq \
+            "module github.com/linuxboot/fiano" \
+            "$source/go.mod"; then
+            echo "ERROR: Unexpected module declaration." >&2
+            exit 1
+          fi
+
+          repository="https://x-access-token:${REPO_ACCESS_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          if git ls-remote \
+            --exit-code \
+            --heads \
+            "$repository" \
+            module >/dev/null 2>&1; then
+
+            git clone \
+              --branch module \
+              --single-branch \
+              "$repository" \
+              "$branch"
+          else
+            git clone \
+              --no-checkout \
+              "$repository" \
+              "$branch"
+
+            git -C "$branch" checkout --orphan module
+            git -C "$branch" rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          find "$branch" \
+            -mindepth 1 \
+            -maxdepth 1 \
+            ! -name .git \
+            -exec rm -rf {} +
+
+          cp -a "$source/." "$branch/"
+
+          git -C "$branch" config user.name "github-actions[bot]"
+          git -C "$branch" config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git -C "$branch" add --all
+
+          if git -C "$branch" diff --cached --quiet; then
+            echo "The module branch already contains this patched source."
+            exit 0
+          fi
+
+          git -C "$branch" commit \
+            -m "Publish patched Fiano v${version}"
+
+          git -C "$branch" push origin module
+
+          echo "Published patched source to the module branch:"
+          git -C "$branch" rev-parse HEAD
 
       - 
         name: Create a release
