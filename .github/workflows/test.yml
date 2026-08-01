@@ -279,143 +279,1056 @@ jobs:
             echo "VERIFY_FFS_BIN=$RESULTS/bin/verify-ffs"
           } >> "$GITHUB_ENV"
 
-      - name: Audit all CLI mutation paths
+      - name: Create complete CLI mutation tests
         run: |
           set -Eeuo pipefail
 
-          require_pattern() {
-            local file="$1"
-            local pattern="$2"
-            local description="$3"
+          cat > "$CANDIDATE_SOURCE/pkg/visitors/preserve_cli_workflow_test.go" <<'GO'
+          // Copyright 2026 the LinuxBoot Authors. All rights reserved
+          // Use of this source code is governed by a BSD-style
+          // license that can be found in the LICENSE file.
 
-            if ! grep -Fq "$pattern" "$CANDIDATE_SOURCE/$file"; then
-              echo "Missing mutation marker for $description." >&2
-              echo "File: $file" >&2
-              echo "Expected: $pattern" >&2
-              exit 1
-            fi
+          package visitors
 
-            printf '%-32s %s\n' "$description" "$file"
+          import (
+          	"bytes"
+          	"encoding/binary"
+          	"io"
+          	"os"
+          	"path/filepath"
+          	"testing"
+
+          	"github.com/linuxboot/fiano/pkg/guid"
+          	"github.com/linuxboot/fiano/pkg/uefi"
+          )
+
+          type workflowModifiedState struct {
+          	biosRegions     int
+          	firmwareVolumes int
+          	files           int
+          	sections        int
+          	nvarStores      int
+          	nvars           int
           }
 
-          {
-            echo "CLI mutation coverage"
-            echo "====================="
-            echo
+          type workflowModifiedCollector struct {
+          	state *workflowModifiedState
+          }
 
-            require_pattern \
-              "pkg/uefi/biosregion.go" \
-              "br.Modified = true" \
-              "BIOSRegion.SetBuf"
+          func (v *workflowModifiedCollector) Run(
+          	f uefi.Firmware,
+          ) error {
+          	return f.Apply(v)
+          }
 
-            require_pattern \
-              "pkg/uefi/file.go" \
-              "f.Modified = true" \
-              "File.SetBuf"
+          func (v *workflowModifiedCollector) Visit(
+          	f uefi.Firmware,
+          ) error {
+          	switch f := f.(type) {
+          	case *uefi.BIOSRegion:
+          		if f.Modified {
+          			v.state.biosRegions++
+          		}
 
-            require_pattern \
-              "pkg/uefi/firmwarevolume.go" \
-              "fv.Modified = true" \
-              "FirmwareVolume.SetBuf"
+          	case *uefi.FirmwareVolume:
+          		if f.Modified {
+          			v.state.firmwareVolumes++
+          		}
 
-            require_pattern \
-              "pkg/uefi/section.go" \
-              "s.Modified = true" \
-              "Section.SetBuf"
+          	case *uefi.File:
+          		if f.Modified {
+          			v.state.files++
+          		}
 
-            require_pattern \
-              "pkg/uefi/nvram.go" \
-              "v.Modified = true" \
-              "NVar.SetBuf"
+          	case *uefi.Section:
+          		if f.Modified {
+          			v.state.sections++
+          		}
 
-            require_pattern \
-              "pkg/uefi/nvram.go" \
-              "s.Modified = true" \
-              "NVarStore.SetBuf"
+          	case *uefi.NVarStore:
+          		if f.Modified {
+          			v.state.nvarStores++
+          		}
 
-            require_pattern \
-              "pkg/visitors/createfv.go" \
-              "br.Modified = true" \
-              "create-fv"
+          	case *uefi.NVar:
+          		if f.Modified {
+          			v.state.nvars++
+          		}
+          	}
 
-            require_pattern \
-              "pkg/visitors/insert.go" \
-              "fvMatch.Modified = true" \
-              "insert into FV"
+          	return f.ApplyChildren(v)
+          }
 
-            require_pattern \
-              "pkg/visitors/insert.go" \
-              "f.Modified = true" \
-              "insert/replace FFS"
+          func workflowCollectModified(
+          	t *testing.T,
+          	root uefi.Firmware,
+          ) workflowModifiedState {
+          	t.Helper()
 
-            require_pattern \
-              "pkg/visitors/nvarinvalidate.go" \
-              "f.Modified = true" \
-              "invalidate_nvar"
+          	state := workflowModifiedState{}
+          	collector := workflowModifiedCollector{
+          		state: &state,
+          	}
 
-            require_pattern \
-              "pkg/visitors/nvramcompact.go" \
-              "s.Modified = true" \
-              "nvram-compact"
+          	if err := collector.Run(root); err != nil {
+          		t.Fatalf(
+          			"collecting modified objects failed: %v",
+          			err,
+          		)
+          	}
 
-            require_pattern \
-              "pkg/visitors/remove.go" \
-              "f.Modified = true" \
-              "remove/remove_pad"
+          	return state
+          }
 
-            require_pattern \
-              "pkg/visitors/repack.go" \
-              "f.Modified = true" \
-              "repack child file"
+          func workflowParseCLI(
+          	t *testing.T,
+          	args ...string,
+          ) []uefi.Visitor {
+          	t.Helper()
 
-            require_pattern \
-              "pkg/visitors/repack.go" \
-              "fv.Modified = true" \
-              "repack firmware volume"
+          	parsed, err := ParseCLI(args)
+          	if err != nil {
+          		t.Fatalf(
+          			"ParseCLI(%q) failed: %v",
+          			args,
+          			err,
+          		)
+          	}
 
-            require_pattern \
-              "pkg/visitors/tightenme.go" \
-              "v.br.Modified = true" \
-              "tighten_me"
+          	return parsed
+          }
 
-            require_pattern \
-              "pkg/visitors/flatten.go" \
-              "clone := *f" \
-              "non-destructive flatten"
+          func workflowExecuteCLI(
+          	t *testing.T,
+          	root uefi.Firmware,
+          	args ...string,
+          ) []uefi.Visitor {
+          	t.Helper()
 
-            require_pattern \
-              "pkg/visitors/assemble.go" \
-              "propagateModified" \
-              "ancestor propagation"
+          	parsed := workflowParseCLI(t, args...)
 
-            test -s \
-              "$CANDIDATE_SOURCE/pkg/visitors/preserve_test.go"
+          	if err := ExecuteCLI(root, parsed); err != nil {
+          		t.Fatalf(
+          			"ExecuteCLI(%q) failed: %v",
+          			args,
+          			err,
+          		)
+          	}
 
-            echo
-            echo "Commands covered through these shared paths:"
-            echo
-            echo "insert"
-            echo "insert pad_file"
-            echo "replace_ffs"
-            echo "insert_front"
-            echo "insert_end"
-            echo "insert_dxe"
-            echo "insert_after"
-            echo "insert_before"
-            echo "remove"
-            echo "remove_pad"
-            echo "remove_dxes_except"
-            echo "replace_pe32"
-            echo "create-fv"
-            echo "repack"
-            echo "invalidate_nvar"
-            echo "invalidate_nvar_except"
-            echo "nvram-compact"
-            echo "dxecleaner"
-            echo "dxecleaner_blacklist"
-            echo "tighten_me"
-            echo "flatten"
-          } | tee "$RESULTS/build/cli-mutation-coverage.txt"
+          	return parsed
+          }
+
+          func workflowSave(
+          	t *testing.T,
+          	root uefi.Firmware,
+          ) []byte {
+          	t.Helper()
+
+          	output := filepath.Join(
+          		t.TempDir(),
+          		"output.bin",
+          	)
+
+          	workflowExecuteCLI(
+          		t,
+          		root,
+          		"save",
+          		output,
+          	)
+
+          	data, err := os.ReadFile(output)
+          	if err != nil {
+          		t.Fatalf(
+          			"reading saved firmware failed: %v",
+          			err,
+          		)
+          	}
+
+          	return data
+          }
+
+          func workflowVerifyMutation(
+          	t *testing.T,
+          	root uefi.Firmware,
+          	before []byte,
+          	expectBinaryChange bool,
+          	command string,
+          ) {
+          	t.Helper()
+
+          	propagateModified(root)
+
+          	state := workflowCollectModified(t, root)
+          	totalModified := state.biosRegions +
+          		state.firmwareVolumes +
+          		state.files +
+          		state.sections +
+          		state.nvarStores +
+          		state.nvars
+
+          	if totalModified == 0 {
+          		t.Fatalf(
+          			"%s did not mark any tracked firmware object modified",
+          			command,
+          		)
+          	}
+
+          	after := workflowSave(t, root)
+
+          	if expectBinaryChange && bytes.Equal(before, after) {
+          		t.Fatalf(
+          			"%s produced an unchanged assembled binary",
+          			command,
+          		)
+          	}
+          }
+
+          func workflowRunMutation(
+          	t *testing.T,
+          	root uefi.Firmware,
+          	expectBinaryChange bool,
+          	args ...string,
+          ) {
+          	t.Helper()
+
+          	before := append(
+          		[]byte(nil),
+          		root.Buf()...,
+          	)
+
+          	workflowExecuteCLI(
+          		t,
+          		root,
+          		args...,
+          	)
+
+          	workflowVerifyMutation(
+          		t,
+          		root,
+          		before,
+          		expectBinaryChange,
+          		args[0],
+          	)
+          }
+
+          func workflowParseNVRAM(
+          	t *testing.T,
+          ) uefi.Firmware {
+          	t.Helper()
+
+          	parser := ParseDir{
+          		BasePath: "../../integration/roms/nvartest/",
+          	}
+
+          	root, err := parser.Parse()
+          	if err != nil {
+          		t.Fatalf(
+          			"parsing NVRAM fixture failed: %v",
+          			err,
+          		)
+          	}
+
+          	assemble := Assemble{}
+          	if err := assemble.Run(root); err != nil {
+          		t.Fatalf(
+          			"assembling NVRAM fixture failed: %v",
+          			err,
+          		)
+          	}
+
+          	return root
+          }
+
+          func workflowRepackFixture(
+          	t *testing.T,
+          ) (
+          	*uefi.FirmwareVolume,
+          	string,
+          ) {
+          	t.Helper()
+
+          	rawSection, err := uefi.CreateSection(
+          		uefi.SectionTypeRaw,
+          		[]byte("workflow repack test"),
+          		nil,
+          		nil,
+          	)
+          	if err != nil {
+          		t.Fatalf(
+          			"creating repack section failed: %v",
+          			err,
+          		)
+          	}
+
+          	fileGUID := guid.MustParse(
+          		"01234567-89AB-CDEF-0123-456789ABCDEF",
+          	)
+
+          	file := &uefi.File{
+          		Sections: []*uefi.Section{
+          			rawSection,
+          		},
+          	}
+          	file.Header.GUID = *fileGUID
+          	file.Header.Type = uefi.FVFileTypeDriver
+          	file.Header.SetState(uefi.FileStateValid)
+
+          	fv := &uefi.FirmwareVolume{
+          		FileSystemGUID: *uefi.FFS2,
+          		Signature: binary.LittleEndian.Uint32(
+          			[]byte("_FVH"),
+          		),
+          		Attributes: 0x0004FEFF,
+          		Revision:   2,
+          		Blocks: []uefi.Block{
+          			{
+          				Count: 16,
+          				Size:  4096,
+          			},
+          			{
+          				Count: 0,
+          				Size:  0,
+          			},
+          		},
+          		HeaderLen:  56,
+          		DataOffset: 56,
+          		Length:     16 * 4096,
+          		FreeSpace:  16*4096 - 56,
+          		Resizable:  true,
+          		Files: []*uefi.File{
+          			file,
+          		},
+          	}
+
+          	return fv, fileGUID.String()
+          }
+
+          func workflowTightenMEFixture(
+          	t *testing.T,
+          ) (
+          	*uefi.FlashImage,
+          	*uefi.MERegion,
+          	*uefi.BIOSRegion,
+          ) {
+          	t.Helper()
+
+          	previousPolarity := uefi.Attributes.ErasePolarity
+          	t.Cleanup(func() {
+          		uefi.Attributes.ErasePolarity = previousPolarity
+          	})
+
+          	uefi.Attributes.ErasePolarity = 0xFF
+
+          	meRegionDescriptor := &uefi.FlashRegion{
+          		Base:  1,
+          		Limit: 2,
+          	}
+
+          	biosRegionDescriptor := &uefi.FlashRegion{
+          		Base:  3,
+          		Limit: 4,
+          	}
+
+          	meBuffer := make([]byte, 0x2000)
+          	uefi.Erase(
+          		meBuffer,
+          		uefi.Attributes.ErasePolarity,
+          	)
+
+          	meRegion := &uefi.MERegion{
+          		FRegion:         meRegionDescriptor,
+          		RegionType:      uefi.RegionTypeME,
+          		FreeSpaceOffset: 0x1000,
+          	}
+          	meRegion.SetBuf(meBuffer)
+
+          	biosBuffer := make([]byte, 0x2000)
+          	uefi.Erase(
+          		biosBuffer,
+          		uefi.Attributes.ErasePolarity,
+          	)
+
+          	padding, err := uefi.NewBIOSPadding(
+          		biosBuffer,
+          		0,
+          	)
+          	if err != nil {
+          		t.Fatalf(
+          			"creating BIOS padding failed: %v",
+          			err,
+          		)
+          	}
+
+          	biosRegion := &uefi.BIOSRegion{
+          		FRegion:    biosRegionDescriptor,
+          		RegionType: uefi.RegionTypeBIOS,
+          		Length:     0x2000,
+          		Parsed:     true,
+          		Elements: []*uefi.TypedFirmware{
+          			uefi.MakeTyped(padding),
+          		},
+          	}
+
+          	root := &uefi.FlashImage{
+          		FlashSize: 0x5000,
+          		Regions: []*uefi.TypedFirmware{
+          			uefi.MakeTyped(meRegion),
+          			uefi.MakeTyped(biosRegion),
+          		},
+          	}
+
+          	return root, meRegion, biosRegion
+          }
+
+          func TestWorkflowCLIRegistration(
+          	t *testing.T,
+          ) {
+          	expected := []string{
+          		"insert",
+          		"replace_ffs",
+          		"insert_front",
+          		"insert_end",
+          		"insert_dxe",
+          		"insert_after",
+          		"insert_before",
+          		"remove",
+          		"remove_pad",
+          		"remove_dxes_except",
+          		"replace_pe32",
+          		"create-fv",
+          		"repack",
+          		"invalidate_nvar",
+          		"invalidate_nvar_except",
+          		"nvram-compact",
+          		"dxecleaner",
+          		"dxecleaner_blacklist",
+          		"tighten_me",
+          		"flatten",
+          	}
+
+          	for _, name := range expected {
+          		if _, ok := visitorRegistry[name]; !ok {
+          			t.Errorf(
+          				"CLI command %q is not registered",
+          				name,
+          			)
+          		}
+          	}
+          }
+
+          func TestWorkflowCLIInsertCommands(
+          	t *testing.T,
+          ) {
+          	tests := []struct {
+          		name         string
+          		args         []string
+          		expectChange bool
+          	}{
+          		{
+          			name: "insert_file_after",
+          			args: []string{
+          				"insert",
+          				"file",
+          				insertTestFile,
+          				"after",
+          				testGUID.String(),
+          			},
+          			expectChange: true,
+          		},
+          		{
+          			name: "insert_pad_before",
+          			args: []string{
+          				"insert",
+          				"pad_file",
+          				"256",
+          				"before",
+          				testGUID.String(),
+          			},
+          			expectChange: true,
+          		},
+          		{
+          			name: "replace_ffs",
+          			args: []string{
+          				"replace_ffs",
+          				testGUID.String(),
+          				insertTestFile,
+          			},
+          			expectChange: false,
+          		},
+          		{
+          			name: "insert_front",
+          			args: []string{
+          				"insert_front",
+          				testGUID.String(),
+          				insertTestFile,
+          			},
+          			expectChange: true,
+          		},
+          		{
+          			name: "insert_end",
+          			args: []string{
+          				"insert_end",
+          				testGUID.String(),
+          				insertTestFile,
+          			},
+          			expectChange: true,
+          		},
+          		{
+          			name: "insert_dxe",
+          			args: []string{
+          				"insert_dxe",
+          				insertTestFile,
+          			},
+          			expectChange: true,
+          		},
+          		{
+          			name: "insert_after",
+          			args: []string{
+          				"insert_after",
+          				testGUID.String(),
+          				insertTestFile,
+          			},
+          			expectChange: true,
+          		},
+          		{
+          			name: "insert_before",
+          			args: []string{
+          				"insert_before",
+          				testGUID.String(),
+          				insertTestFile,
+          			},
+          			expectChange: true,
+          		},
+          	}
+
+          	for _, test := range tests {
+          		t.Run(test.name, func(t *testing.T) {
+          			root := parseImage(t)
+
+          			workflowRunMutation(
+          				t,
+          				root,
+          				test.expectChange,
+          				test.args...,
+          			)
+          		})
+          	}
+          }
+
+          func TestWorkflowCLIRemoveCommands(
+          	t *testing.T,
+          ) {
+          	t.Run("remove", func(t *testing.T) {
+          		root := parseImage(t)
+
+          		workflowRunMutation(
+          			t,
+          			root,
+          			true,
+          			"remove",
+          			testGUID.String(),
+          		)
+          	})
+
+          	t.Run("remove_pad", func(t *testing.T) {
+          		root := parseImage(t)
+
+          		workflowRunMutation(
+          			t,
+          			root,
+          			true,
+          			"remove_pad",
+          			testGUID.String(),
+          		)
+          	})
+
+          	t.Run(
+          		"remove_dxes_except",
+          		func(t *testing.T) {
+          			whitelist := filepath.Join(
+          				t.TempDir(),
+          				"dxe-whitelist.txt",
+          			)
+
+          			if err := os.WriteFile(
+          				whitelist,
+          				[]byte(
+          					dxeCoreGUID.String() + "\n",
+          				),
+          				0o600,
+          			); err != nil {
+          				t.Fatal(err)
+          			}
+
+          			root := parseImage(t)
+
+          			workflowRunMutation(
+          				t,
+          				root,
+          				true,
+          				"remove_dxes_except",
+          				whitelist,
+          			)
+          		},
+          	)
+          }
+
+          func TestWorkflowCLIReplacePE32(
+          	t *testing.T,
+          ) {
+          	replacement := filepath.Join(
+          		t.TempDir(),
+          		"replacement.bin",
+          	)
+
+          	if err := os.WriteFile(
+          		replacement,
+          		[]byte("MZworkflow"),
+          		0o600,
+          	); err != nil {
+          		t.Fatal(err)
+          	}
+
+          	root := parseImage(t)
+
+          	workflowRunMutation(
+          		t,
+          		root,
+          		true,
+          		"replace_pe32",
+          		testGUID.String(),
+          		replacement,
+          	)
+
+          	state := workflowCollectModified(t, root)
+          	if state.sections == 0 {
+          		t.Fatal(
+          			"replace_pe32 did not mark a section modified",
+          		)
+          	}
+          }
+
+          func TestWorkflowCLICreateFV(
+          	t *testing.T,
+          ) {
+          	previousPolarity := uefi.Attributes.ErasePolarity
+          	t.Cleanup(func() {
+          		uefi.Attributes.ErasePolarity = previousPolarity
+          	})
+
+          	uefi.Attributes.ErasePolarity = 0xFF
+
+          	buffer := make([]byte, 0x10000)
+          	uefi.Erase(
+          		buffer,
+          		uefi.Attributes.ErasePolarity,
+          	)
+
+          	region, err := uefi.NewBIOSRegion(
+          		buffer,
+          		nil,
+          		uefi.RegionTypeBIOS,
+          	)
+          	if err != nil {
+          		t.Fatal(err)
+          	}
+
+          	workflowRunMutation(
+          		t,
+          		region,
+          		true,
+          		"create-fv",
+          		"0x8000",
+          		"0x1000",
+          		"DECAFBAD-0000-0000-0000-000000000000",
+          	)
+
+          	biosRegion := region.(*uefi.BIOSRegion)
+          	if !biosRegion.Modified {
+          		t.Fatal(
+          			"create-fv did not mark the BIOS region modified",
+          		)
+          	}
+          }
+
+          func TestWorkflowCLIRepack(
+          	t *testing.T,
+          ) {
+          	root, target := workflowRepackFixture(t)
+
+          	workflowExecuteCLI(
+          		t,
+          		root,
+          		"repack",
+          		target,
+          	)
+
+          	if !root.Modified {
+          		t.Fatal(
+          			"repack did not mark the firmware volume modified",
+          		)
+          	}
+
+          	if len(root.Files) != 1 {
+          		t.Fatalf(
+          			"repack produced %d files; expected 1",
+          			len(root.Files),
+          		)
+          	}
+
+          	if root.Files[0].Header.Type !=
+          		uefi.FVFileTypeVolumeImage {
+          		t.Fatalf(
+          			"repack produced file type %v; expected %v",
+          			root.Files[0].Header.Type,
+          			uefi.FVFileTypeVolumeImage,
+          		)
+          	}
+
+          	workflowSave(t, root)
+          }
+
+          func TestWorkflowCLINVRAMCommands(
+          	t *testing.T,
+          ) {
+          	t.Run("invalidate_nvar", func(t *testing.T) {
+          		root := workflowParseNVRAM(t)
+
+          		workflowRunMutation(
+          			t,
+          			root,
+          			true,
+          			"invalidate_nvar",
+          			"Test0",
+          		)
+
+          		state := workflowCollectModified(t, root)
+          		if state.nvars == 0 {
+          			t.Fatal(
+          				"invalidate_nvar did not mark an NVar modified",
+          			)
+          		}
+          	})
+
+          	t.Run(
+          		"invalidate_nvar_except",
+          		func(t *testing.T) {
+          			whitelist := filepath.Join(
+          				t.TempDir(),
+          				"nvar-whitelist.txt",
+          			)
+
+          			if err := os.WriteFile(
+          				whitelist,
+          				[]byte("Test0\n"),
+          				0o600,
+          			); err != nil {
+          				t.Fatal(err)
+          			}
+
+          			root := workflowParseNVRAM(t)
+
+          			workflowRunMutation(
+          				t,
+          				root,
+          				true,
+          				"invalidate_nvar_except",
+          				whitelist,
+          			)
+
+          			state := workflowCollectModified(t, root)
+          			if state.nvars == 0 {
+          				t.Fatal(
+          					"invalidate_nvar_except did not mark any NVar modified",
+          				)
+          			}
+          		},
+          	)
+
+          	t.Run("nvram-compact", func(t *testing.T) {
+          		root := workflowParseNVRAM(t)
+
+          		workflowRunMutation(
+          			t,
+          			root,
+          			true,
+          			"nvram-compact",
+          		)
+
+          		state := workflowCollectModified(t, root)
+          		if state.nvarStores == 0 {
+          			t.Fatal(
+          				"nvram-compact did not mark an NVar store modified",
+          			)
+          		}
+          	})
+          }
+
+          func workflowRunDXECleaner(
+          	t *testing.T,
+          	args ...string,
+          ) {
+          	t.Helper()
+
+          	root := parseImage(t)
+          	before := append(
+          		[]byte(nil),
+          		root.Buf()...,
+          	)
+
+          	parsed := workflowParseCLI(t, args...)
+          	if len(parsed) != 1 {
+          		t.Fatalf(
+          			"ParseCLI(%q) produced %d visitors; expected 1",
+          			args,
+          			len(parsed),
+          		)
+          	}
+
+          	cleaner, ok := parsed[0].(*DXECleaner)
+          	if !ok {
+          		t.Fatalf(
+          			"ParseCLI(%q) produced visitor type %T",
+          			args,
+          			parsed[0],
+          		)
+          	}
+
+          	cleaner.Test = func(
+          		uefi.Firmware,
+          	) (bool, error) {
+          		return true, nil
+          	}
+          	cleaner.W = io.Discard
+
+          	if err := ExecuteCLI(root, parsed); err != nil {
+          		t.Fatalf(
+          			"ExecuteCLI(%q) failed: %v",
+          			args,
+          			err,
+          		)
+          	}
+
+          	if len(cleaner.Removals) == 0 {
+          		t.Fatalf(
+          			"%s did not remove any DXE files",
+          			args[0],
+          		)
+          	}
+
+          	workflowVerifyMutation(
+          		t,
+          		root,
+          		before,
+          		true,
+          		args[0],
+          	)
+          }
+
+          func TestWorkflowCLIDXECleanerCommands(
+          	t *testing.T,
+          ) {
+          	t.Run("dxecleaner", func(t *testing.T) {
+          		workflowRunDXECleaner(
+          			t,
+          			"dxecleaner",
+          			"/bin/true",
+          		)
+          	})
+
+          	t.Run(
+          		"dxecleaner_blacklist",
+          		func(t *testing.T) {
+          			blacklist := filepath.Join(
+          				t.TempDir(),
+          				"empty-blacklist.txt",
+          			)
+
+          			if err := os.WriteFile(
+          				blacklist,
+          				nil,
+          				0o600,
+          			); err != nil {
+          				t.Fatal(err)
+          			}
+
+          			workflowRunDXECleaner(
+          				t,
+          				"dxecleaner_blacklist",
+          				"/bin/true",
+          				blacklist,
+          			)
+          		},
+          	)
+          }
+
+          func TestWorkflowCLITightenME(
+          	t *testing.T,
+          ) {
+          	root, meRegion, biosRegion :=
+          		workflowTightenMEFixture(t)
+
+          	oldMELimit := meRegion.FRegion.Limit
+          	oldBIOSBase := biosRegion.FRegion.Base
+          	oldBIOSLength := biosRegion.Length
+
+          	workflowExecuteCLI(
+          		t,
+          		root,
+          		"tighten_me",
+          	)
+
+          	if !biosRegion.Modified {
+          		t.Fatal(
+          			"tighten_me did not mark the BIOS region modified",
+          		)
+          	}
+
+          	if meRegion.FRegion.Limit >= oldMELimit {
+          		t.Fatalf(
+          			"tighten_me did not reduce the ME region limit: old=%#x new=%#x",
+          			oldMELimit,
+          			meRegion.FRegion.Limit,
+          		)
+          	}
+
+          	if biosRegion.FRegion.Base >= oldBIOSBase {
+          		t.Fatalf(
+          			"tighten_me did not lower the BIOS region base: old=%#x new=%#x",
+          			oldBIOSBase,
+          			biosRegion.FRegion.Base,
+          		)
+          	}
+
+          	if biosRegion.Length <= oldBIOSLength {
+          		t.Fatalf(
+          			"tighten_me did not expand the BIOS region: old=%#x new=%#x",
+          			oldBIOSLength,
+          			biosRegion.Length,
+          		)
+          	}
+
+          	if len(biosRegion.Elements) != 2 {
+          		t.Fatalf(
+          			"tighten_me produced %d BIOS elements; expected 2",
+          			len(biosRegion.Elements),
+          		)
+          	}
+          }
+
+          func TestWorkflowCLIFlattenReadOnly(
+          	t *testing.T,
+          ) {
+          	root := parseImage(t)
+          	before := append(
+          		[]byte(nil),
+          		root.Buf()...,
+          	)
+
+          	matches := find(t, root, testGUID)
+          	if len(matches) != 1 {
+          		t.Fatalf(
+          			"found %d test files; expected 1",
+          			len(matches),
+          		)
+          	}
+
+          	file, ok := matches[0].(*uefi.File)
+          	if !ok {
+          		t.Fatalf(
+          			"matched object has type %T; expected *uefi.File",
+          			matches[0],
+          		)
+          	}
+
+          	sectionCount := len(file.Sections)
+
+          	parsed := workflowParseCLI(
+          		t,
+          		"flatten",
+          	)
+
+          	if len(parsed) != 1 {
+          		t.Fatalf(
+          			"flatten produced %d visitors; expected 1",
+          			len(parsed),
+          		)
+          	}
+
+          	flatten, ok := parsed[0].(*Flatten)
+          	if !ok {
+          		t.Fatalf(
+          			"flatten produced visitor type %T",
+          			parsed[0],
+          		)
+          	}
+          	flatten.W = io.Discard
+
+          	if err := ExecuteCLI(root, parsed); err != nil {
+          		t.Fatalf(
+          			"flatten failed: %v",
+          			err,
+          		)
+          	}
+
+          	if len(flatten.List) == 0 {
+          		t.Fatal(
+          			"flatten produced an empty list",
+          		)
+          	}
+
+          	if !bytes.Equal(before, root.Buf()) {
+          		t.Fatal(
+          			"flatten modified the root binary buffer",
+          		)
+          	}
+
+          	if len(file.Sections) != sectionCount {
+          		t.Fatalf(
+          			"flatten changed the file section count from %d to %d",
+          			sectionCount,
+          			len(file.Sections),
+          		)
+          	}
+          }
+          GO
+
+          gofmt -w \
+            "$CANDIDATE_SOURCE/pkg/visitors/preserve_cli_workflow_test.go"
+
+          cat > "$RESULTS/build/cli-mutation-coverage.txt" <<'EOF'
+          CLI commands executed by preserve_cli_workflow_test.go
+          =====================================================
+
+          insert file
+          insert pad_file
+          replace_ffs
+          insert_front
+          insert_end
+          insert_dxe
+          insert_after
+          insert_before
+          remove
+          remove_pad
+          remove_dxes_except
+          replace_pe32
+          create-fv
+          repack
+          invalidate_nvar
+          invalidate_nvar_except
+          nvram-compact
+          dxecleaner
+          dxecleaner_blacklist
+          tighten_me
+
+          Read-only regression check
+          ==========================
+
+          flatten
+          EOF
+
+          test -s \
+            "$CANDIDATE_SOURCE/pkg/visitors/preserve_cli_workflow_test.go"
 
       - name: Download Go dependencies
         run: |
@@ -566,7 +1479,9 @@ jobs:
 
           	match, err := visitors.FindExactlyOne(
           		root,
-          		visitors.FindFileGUIDPredicate(expected.Header.GUID),
+          		visitors.FindFileGUIDPredicate(
+          			expected.Header.GUID,
+          		),
           	)
           	if err != nil {
           		fatalf("find replacement FFS: %v", err)
