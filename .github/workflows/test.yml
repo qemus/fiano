@@ -292,7 +292,6 @@ jobs:
 
           import (
           	"bytes"
-          	"encoding/binary"
           	"io"
           	"os"
           	"path/filepath"
@@ -511,6 +510,159 @@ jobs:
           	)
           }
 
+          func workflowWriteSmallFFS(
+          	t *testing.T,
+          	fileGUID guid.GUID,
+          	fileType uefi.FVFileType,
+          	name string,
+          ) string {
+          	t.Helper()
+
+          	previousPolarity := uefi.Attributes.ErasePolarity
+          	uefi.Attributes.ErasePolarity = 0xFF
+          	defer func() {
+          		uefi.Attributes.ErasePolarity = previousPolarity
+          	}()
+
+          	section, err := uefi.CreateSection(
+          		uefi.SectionTypeRaw,
+          		[]byte("workflow "+name),
+          		nil,
+          		nil,
+          	)
+          	if err != nil {
+          		t.Fatalf(
+          			"creating %s section failed: %v",
+          			name,
+          			err,
+          		)
+          	}
+
+          	file := &uefi.File{
+          		Sections: []*uefi.Section{
+          			section,
+          		},
+          	}
+          	file.Header.GUID = fileGUID
+          	file.Header.Type = fileType
+          	file.Header.SetState(uefi.FileStateValid)
+
+          	assemble := &Assemble{}
+          	if err := assemble.Run(file); err != nil {
+          		t.Fatalf(
+          			"assembling %s FFS failed: %v",
+          			name,
+          			err,
+          		)
+          	}
+
+          	path := filepath.Join(
+          		t.TempDir(),
+          		name+".ffs",
+          	)
+
+          	if err := os.WriteFile(
+          		path,
+          		file.Buf(),
+          		0o600,
+          	); err != nil {
+          		t.Fatalf(
+          			"writing %s FFS failed: %v",
+          			name,
+          			err,
+          		)
+          	}
+
+          	parsed, err := uefi.NewFile(file.Buf())
+          	if err != nil {
+          		t.Fatalf(
+          			"validating %s FFS failed: %v",
+          			name,
+          			err,
+          		)
+          	}
+          	if parsed == nil {
+          		t.Fatalf(
+          			"%s FFS parsed as free space",
+          			name,
+          		)
+          	}
+
+          	return path
+          }
+
+          func workflowPreparedInsertImage(
+          	t *testing.T,
+          ) (
+          	uefi.Firmware,
+          	string,
+          ) {
+          	t.Helper()
+
+          	root := parseImage(t)
+
+          	smallTarget := workflowWriteSmallFFS(
+          		t,
+          		*testGUID,
+          		uefi.FVFileTypeDriver,
+          		"small-target",
+          	)
+
+          	smallDXECore := workflowWriteSmallFFS(
+          		t,
+          		*dxeCoreGUID,
+          		uefi.FVFileTypeDXECore,
+          		"small-dxe-core",
+          	)
+
+          	payloadGUID := guid.MustParse(
+          		"DECAFBAD-1111-2222-3333-444444444444",
+          	)
+
+          	payload := workflowWriteSmallFFS(
+          		t,
+          		*payloadGUID,
+          		uefi.FVFileTypeDriver,
+          		"insert-payload",
+          	)
+
+          	preparedPath := filepath.Join(
+          		t.TempDir(),
+          		"prepared-insert.rom",
+          	)
+
+          	workflowExecuteCLI(
+          		t,
+          		root,
+          		"replace_ffs",
+          		testGUID.String(),
+          		smallTarget,
+          		"replace_ffs",
+          		dxeCoreGUID.String(),
+          		smallDXECore,
+          		"save",
+          		preparedPath,
+          	)
+
+          	data, err := os.ReadFile(preparedPath)
+          	if err != nil {
+          		t.Fatalf(
+          			"reading prepared insert image failed: %v",
+          			err,
+          		)
+          	}
+
+          	prepared, err := uefi.Parse(data)
+          	if err != nil {
+          		t.Fatalf(
+          			"parsing prepared insert image failed: %v",
+          			err,
+          		)
+          	}
+
+          	return prepared, payload
+          }
+
           func workflowParseNVRAM(
           	t *testing.T,
           ) uefi.Firmware {
@@ -547,6 +699,12 @@ jobs:
           ) {
           	t.Helper()
 
+          	previousPolarity := uefi.Attributes.ErasePolarity
+          	uefi.Attributes.ErasePolarity = 0xFF
+          	t.Cleanup(func() {
+          		uefi.Attributes.ErasePolarity = previousPolarity
+          	})
+
           	rawSection, err := uefi.CreateSection(
           		uefi.SectionTypeRaw,
           		[]byte("workflow repack test"),
@@ -573,34 +731,24 @@ jobs:
           	file.Header.Type = uefi.FVFileTypeDriver
           	file.Header.SetState(uefi.FileStateValid)
 
-          	const volumeLength = uint64(16 * 4096)
-          	const headerLength = uint16(56)
-
-          	fv := &uefi.FirmwareVolume{
-          		FirmwareVolumeFixedHeader: uefi.FirmwareVolumeFixedHeader{
-          			FileSystemGUID: *uefi.FFS2,
-          			Length:         volumeLength,
-          			Signature: binary.LittleEndian.Uint32(
-          				[]byte("_FVH"),
-          			),
-          			Attributes: 0x0004FEFF,
-          			HeaderLen:  headerLength,
-          			Revision:   2,
-          		},
-          		Blocks: []uefi.Block{
-          			{
-          				Count: 16,
-          				Size:  4096,
-          			},
-          			{},
-          		},
-          		DataOffset: uint64(headerLength),
-          		FreeSpace:  volumeLength - uint64(headerLength),
-          		Resizable:  true,
-          		Files: []*uefi.File{
-          			file,
-          		},
+          	fv, err := createEmptyFirmwareVolume(
+          		0,
+          		16*4096,
+          		nil,
+          	)
+          	if err != nil {
+          		t.Fatalf(
+          			"creating repack firmware volume failed: %v",
+          			err,
+          		)
           	}
+
+          	fv.Resizable = true
+          	fv.Files = []*uefi.File{
+          		file,
+          	}
+
+          	fv.Modified = false
 
           	return fv, fileGUID.String()
           }
@@ -722,96 +870,104 @@ jobs:
           	t *testing.T,
           ) {
           	tests := []struct {
-          		name         string
-          		args         []string
-          		expectChange bool
+          		name string
+          		args func(string) []string
           	}{
           		{
           			name: "insert_file_after",
-          			args: []string{
-          				"insert",
-          				"file",
-          				insertTestFile,
-          				"after",
-          				testGUID.String(),
+          			args: func(payload string) []string {
+          				return []string{
+          					"insert",
+          					"file",
+          					payload,
+          					"after",
+          					testGUID.String(),
+          				}
           			},
-          			expectChange: true,
           		},
           		{
           			name: "insert_pad_before",
-          			args: []string{
-          				"insert",
-          				"pad_file",
-          				"256",
-          				"before",
-          				testGUID.String(),
+          			args: func(string) []string {
+          				return []string{
+          					"insert",
+          					"pad_file",
+          					"256",
+          					"before",
+          					testGUID.String(),
+          				}
           			},
-          			expectChange: true,
           		},
           		{
           			name: "replace_ffs",
-          			args: []string{
-          				"replace_ffs",
-          				testGUID.String(),
-          				insertTestFile,
+          			args: func(payload string) []string {
+          				return []string{
+          					"replace_ffs",
+          					testGUID.String(),
+          					payload,
+          				}
           			},
-          			expectChange: false,
           		},
           		{
           			name: "insert_front",
-          			args: []string{
-          				"insert_front",
-          				testGUID.String(),
-          				insertTestFile,
+          			args: func(payload string) []string {
+          				return []string{
+          					"insert_front",
+          					testGUID.String(),
+          					payload,
+          				}
           			},
-          			expectChange: true,
           		},
           		{
           			name: "insert_end",
-          			args: []string{
-          				"insert_end",
-          				testGUID.String(),
-          				insertTestFile,
+          			args: func(payload string) []string {
+          				return []string{
+          					"insert_end",
+          					testGUID.String(),
+          					payload,
+          				}
           			},
-          			expectChange: true,
           		},
           		{
           			name: "insert_dxe",
-          			args: []string{
-          				"insert_dxe",
-          				insertTestFile,
+          			args: func(payload string) []string {
+          				return []string{
+          					"insert_dxe",
+          					payload,
+          				}
           			},
-          			expectChange: true,
           		},
           		{
           			name: "insert_after",
-          			args: []string{
-          				"insert_after",
-          				testGUID.String(),
-          				insertTestFile,
+          			args: func(payload string) []string {
+          				return []string{
+          					"insert_after",
+          					testGUID.String(),
+          					payload,
+          				}
           			},
-          			expectChange: true,
           		},
           		{
           			name: "insert_before",
-          			args: []string{
-          				"insert_before",
-          				testGUID.String(),
-          				insertTestFile,
+          			args: func(payload string) []string {
+          				return []string{
+          					"insert_before",
+          					testGUID.String(),
+          					payload,
+          				}
           			},
-          			expectChange: true,
           		},
           	}
 
           	for _, test := range tests {
           		t.Run(test.name, func(t *testing.T) {
-          			root := parseImage(t)
+          			root, payload :=
+          				workflowPreparedInsertImage(t)
 
           			workflowRunMutation(
           				t,
           				root,
-          				test.expectChange,
-          				test.args...,
+          				true,
+          				test.args(payload)...,
           			)
           		})
           	}
