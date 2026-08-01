@@ -23,7 +23,9 @@ jobs:
           #!/usr/bin/env bash
           set -Eeuo pipefail
 
-          version="1.${{ vars.MAJOR }}.${{ vars.MINOR }}"
+          minor="${{ vars.MINOR }}"
+          minor="${minor#0}"
+          version="1.${{ vars.MAJOR }}.${minor:-0}"
 
           if [ -z "${{ vars.MAJOR }}" ] || [ -z "${{ vars.MINOR }}" ]; then
             echo "ERROR: MAJOR and MINOR repository variables must be set." >&2
