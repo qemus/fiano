@@ -89,7 +89,7 @@ jobs:
             ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,priority=100
-            type=raw,value=${{ vars.MAJOR }}.${{ vars.MINOR }}
+            type=raw,value=${{ env.version }}
           labels: |
             org.opencontainers.image.title=${{ vars.NAME }}
         env:
