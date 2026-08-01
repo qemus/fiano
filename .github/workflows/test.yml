@@ -1,0 +1,2427 @@
+name: Fiano ROM comparison
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - ".github/workflows/test.yml"
+      - "Dockerfile"
+      - "lzma-level.patch"
+      - "preserve-unchanged.patch"
+
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Number of benchmark runs per operation
+        required: false
+        default: "10"
+        type: string
+
+      lzma_level:
+        description: LZMA level used for the primary comparison
+        required: false
+        default: "1"
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+
+      compression_matrix:
+        description: Test system and internal LZMA at levels 0 through 9
+        required: false
+        default: true
+        type: boolean
+
+      boot_test:
+        description: Run a QEMU TCG boot smoke test
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fiano-rom-comparison-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    name: Build and compare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    env:
+      FIANO_VERSION: "1.2.0"
+      GO_VERSION: "1.25.7"
+      RESULTS: ${{ github.workspace }}/results
+      RUNS: ${{ inputs.runs || '10' }}
+      LZMA_LEVEL: ${{ inputs.lzma_level || '1' }}
+      RUN_MATRIX: ${{ github.event_name != 'workflow_dispatch' || inputs.compression_matrix }}
+      RUN_BOOT_TEST: ${{ github.event_name != 'workflow_dispatch' || inputs.boot_test }}
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v7
+
+      - name: Initialize result directory
+        run: |
+          set -Eeuo pipefail
+
+          rm -rf "$RESULTS"
+
+          mkdir -p \
+            "$RESULTS/assets" \
+            "$RESULTS/benchmark" \
+            "$RESULTS/bin" \
+            "$RESULTS/build" \
+            "$RESULTS/logs" \
+            "$RESULTS/outputs" \
+            "$RESULTS/source"
+
+          {
+            echo "# Fiano ROM comparison"
+            echo
+            echo "The workflow started successfully."
+            echo
+            echo "- Repository: \`$GITHUB_REPOSITORY\`"
+            echo "- Ref: \`$GITHUB_REF\`"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Run: \`$GITHUB_RUN_ID\`"
+          } > "$RESULTS/workflow-start.md"
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.7"
+          cache: false
+
+      - name: Install test tools
+        run: |
+          set -Eeuo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 \
+            time \
+            xz-utils
+
+      - name: Validate project and inputs
+        run: |
+          set -Eeuo pipefail
+
+          if [[ ! "$RUNS" =~ ^[0-9]+$ ]] || (( RUNS < 1 || RUNS > 50 )); then
+            echo "RUNS must be an integer from 1 through 50." >&2
+            exit 1
+          fi
+
+          if [[ ! "$LZMA_LEVEL" =~ ^[0-9]$ ]]; then
+            echo "LZMA_LEVEL must be from 0 through 9." >&2
+            exit 1
+          fi
+
+          for file in \
+            Dockerfile \
+            lzma-level.patch \
+            preserve-unchanged.patch; do
+
+            if [[ ! -s "$file" ]]; then
+              echo "Required project file is missing or empty: $file" >&2
+              exit 1
+            fi
+          done
+
+          grep -Fq \
+            'golang:1.25.7-alpine' \
+            Dockerfile
+
+          grep -Fq \
+            'git clone -b "v$VERSION_ARG"' \
+            Dockerfile
+
+          grep -Fq \
+            'lzma-level' \
+            lzma-level.patch
+
+          grep -Fq \
+            'propagateModified' \
+            preserve-unchanged.patch
+
+          grep -Fq \
+            'pkg/visitors/tightenme.go' \
+            preserve-unchanged.patch
+
+          grep -Fq \
+            'pkg/visitors/flatten.go' \
+            preserve-unchanged.patch
+
+          {
+            echo "go_version=$GO_VERSION"
+            echo "fiano_version=$FIANO_VERSION"
+            echo "runs=$RUNS"
+            echo "lzma_level=$LZMA_LEVEL"
+            echo "compression_matrix=$RUN_MATRIX"
+            echo "boot_test=$RUN_BOOT_TEST"
+          } > "$RESULTS/configuration.txt"
+
+      - name: Create both Fiano source variants
+        run: |
+          set -Eeuo pipefail
+
+          UPSTREAM_SOURCE="$RUNNER_TEMP/fiano-upstream"
+          BASELINE_SOURCE="$RUNNER_TEMP/fiano-lzma-only"
+          CANDIDATE_SOURCE="$RUNNER_TEMP/fiano-lzma-preserve"
+
+          rm -rf \
+            "$UPSTREAM_SOURCE" \
+            "$BASELINE_SOURCE" \
+            "$CANDIDATE_SOURCE"
+
+          git clone \
+            --branch "v$FIANO_VERSION" \
+            --depth 1 \
+            https://github.com/linuxboot/fiano.git \
+            "$UPSTREAM_SOURCE"
+
+          git clone \
+            --local \
+            --no-hardlinks \
+            "$UPSTREAM_SOURCE" \
+            "$BASELINE_SOURCE"
+
+          git clone \
+            --local \
+            --no-hardlinks \
+            "$UPSTREAM_SOURCE" \
+            "$CANDIDATE_SOURCE"
+
+          git -C "$BASELINE_SOURCE" apply \
+            --check \
+            "$GITHUB_WORKSPACE/lzma-level.patch"
+
+          git -C "$BASELINE_SOURCE" apply \
+            "$GITHUB_WORKSPACE/lzma-level.patch"
+
+          git -C "$CANDIDATE_SOURCE" apply \
+            --check \
+            "$GITHUB_WORKSPACE/lzma-level.patch"
+
+          git -C "$CANDIDATE_SOURCE" apply \
+            "$GITHUB_WORKSPACE/lzma-level.patch"
+
+          git -C "$CANDIDATE_SOURCE" apply \
+            --recount \
+            --check \
+            "$GITHUB_WORKSPACE/preserve-unchanged.patch"
+
+          git -C "$CANDIDATE_SOURCE" apply \
+            --recount \
+            "$GITHUB_WORKSPACE/preserve-unchanged.patch"
+
+          grep -Fq \
+            'lzma-level' \
+            "$BASELINE_SOURCE/pkg/compression/compression.go"
+
+          if grep -R -Fq \
+            'propagateModified' \
+            "$BASELINE_SOURCE/pkg"; then
+
+            echo "The preservation patch is present in the baseline source." >&2
+            exit 1
+          fi
+
+          grep -Fq \
+            'lzma-level' \
+            "$CANDIDATE_SOURCE/pkg/compression/compression.go"
+
+          grep -Fq \
+            'propagateModified' \
+            "$CANDIDATE_SOURCE/pkg/visitors/assemble.go"
+
+          git -C "$BASELINE_SOURCE" diff \
+            > "$RESULTS/source/lzma-only.diff"
+
+          git -C "$CANDIDATE_SOURCE" diff \
+            > "$RESULTS/source/lzma-preserve.diff"
+
+          git -C "$BASELINE_SOURCE" diff --check
+          git -C "$CANDIDATE_SOURCE" diff --check
+
+          {
+            echo "## Upstream commit"
+            git -C "$UPSTREAM_SOURCE" rev-parse HEAD
+
+            echo
+            echo "## Baseline changes"
+            git -C "$BASELINE_SOURCE" diff --stat
+
+            echo
+            echo "## Candidate changes"
+            git -C "$CANDIDATE_SOURCE" diff --stat
+          } | tee "$RESULTS/source/source-state.txt"
+
+          {
+            echo "UPSTREAM_SOURCE=$UPSTREAM_SOURCE"
+            echo "BASELINE_SOURCE=$BASELINE_SOURCE"
+            echo "CANDIDATE_SOURCE=$CANDIDATE_SOURCE"
+            echo "BASELINE_BIN=$RESULTS/bin/utk-lzma-only"
+            echo "CANDIDATE_BIN=$RESULTS/bin/utk-lzma-preserve"
+            echo "VERIFY_FFS_BIN=$RESULTS/bin/verify-ffs"
+          } >> "$GITHUB_ENV"
+
+      - name: Create complete CLI mutation tests
+        run: |
+          set -Eeuo pipefail
+
+          cat > "$CANDIDATE_SOURCE/pkg/visitors/preserve_cli_workflow_test.go" <<'GO'
+          // Copyright 2026 the LinuxBoot Authors. All rights reserved
+          // Use of this source code is governed by a BSD-style
+          // license that can be found in the LICENSE file.
+
+          package visitors
+
+          import (
+          	"bytes"
+          	"io"
+          	"os"
+          	"path/filepath"
+          	"testing"
+
+          	"github.com/linuxboot/fiano/pkg/guid"
+          	"github.com/linuxboot/fiano/pkg/uefi"
+          )
+
+          type workflowModifiedState struct {
+          	biosRegions     int
+          	firmwareVolumes int
+          	files           int
+          	sections        int
+          	nvarStores      int
+          	nvars           int
+          }
+
+          type workflowModifiedCollector struct {
+          	state *workflowModifiedState
+          }
+
+          func (v *workflowModifiedCollector) Run(
+          	f uefi.Firmware,
+          ) error {
+          	return f.Apply(v)
+          }
+
+          func (v *workflowModifiedCollector) Visit(
+          	f uefi.Firmware,
+          ) error {
+          	switch f := f.(type) {
+          	case *uefi.BIOSRegion:
+          		if f.Modified {
+          			v.state.biosRegions++
+          		}
+
+          	case *uefi.FirmwareVolume:
+          		if f.Modified {
+          			v.state.firmwareVolumes++
+          		}
+
+          	case *uefi.File:
+          		if f.Modified {
+          			v.state.files++
+          		}
+
+          	case *uefi.Section:
+          		if f.Modified {
+          			v.state.sections++
+          		}
+
+          	case *uefi.NVarStore:
+          		if f.Modified {
+          			v.state.nvarStores++
+          		}
+
+          	case *uefi.NVar:
+          		if f.Modified {
+          			v.state.nvars++
+          		}
+          	}
+
+          	return f.ApplyChildren(v)
+          }
+
+          func workflowCollectModified(
+          	t *testing.T,
+          	root uefi.Firmware,
+          ) workflowModifiedState {
+          	t.Helper()
+
+          	state := workflowModifiedState{}
+          	collector := workflowModifiedCollector{
+          		state: &state,
+          	}
+
+          	if err := collector.Run(root); err != nil {
+          		t.Fatalf(
+          			"collecting modified objects failed: %v",
+          			err,
+          		)
+          	}
+
+          	return state
+          }
+
+          func workflowParseCLI(
+          	t *testing.T,
+          	args ...string,
+          ) []uefi.Visitor {
+          	t.Helper()
+
+          	parsed, err := ParseCLI(args)
+          	if err != nil {
+          		t.Fatalf(
+          			"ParseCLI(%q) failed: %v",
+          			args,
+          			err,
+          		)
+          	}
+
+          	return parsed
+          }
+
+          func workflowExecuteCLI(
+          	t *testing.T,
+          	root uefi.Firmware,
+          	args ...string,
+          ) []uefi.Visitor {
+          	t.Helper()
+
+          	parsed := workflowParseCLI(t, args...)
+
+          	if err := ExecuteCLI(root, parsed); err != nil {
+          		t.Fatalf(
+          			"ExecuteCLI(%q) failed: %v",
+          			args,
+          			err,
+          		)
+          	}
+
+          	return parsed
+          }
+
+          func workflowSave(
+          	t *testing.T,
+          	root uefi.Firmware,
+          ) []byte {
+          	t.Helper()
+
+          	output := filepath.Join(
+          		t.TempDir(),
+          		"output.bin",
+          	)
+
+          	workflowExecuteCLI(
+          		t,
+          		root,
+          		"save",
+          		output,
+          	)
+
+          	data, err := os.ReadFile(output)
+          	if err != nil {
+          		t.Fatalf(
+          			"reading saved firmware failed: %v",
+          			err,
+          		)
+          	}
+
+          	return data
+          }
+
+          func workflowVerifyMutation(
+          	t *testing.T,
+          	root uefi.Firmware,
+          	before []byte,
+          	expectBinaryChange bool,
+          	command string,
+          ) {
+          	t.Helper()
+
+          	propagateModified(root)
+
+          	state := workflowCollectModified(t, root)
+          	totalModified := state.biosRegions +
+          		state.firmwareVolumes +
+          		state.files +
+          		state.sections +
+          		state.nvarStores +
+          		state.nvars
+
+          	if totalModified == 0 {
+          		t.Fatalf(
+          			"%s did not mark any tracked firmware object modified",
+          			command,
+          		)
+          	}
+
+          	after := workflowSave(t, root)
+
+          	if expectBinaryChange && bytes.Equal(before, after) {
+          		t.Fatalf(
+          			"%s produced an unchanged assembled binary",
+          			command,
+          		)
+          	}
+          }
+
+          func workflowRunMutation(
+          	t *testing.T,
+          	root uefi.Firmware,
+          	expectBinaryChange bool,
+          	args ...string,
+          ) {
+          	t.Helper()
+
+          	before := append(
+          		[]byte(nil),
+          		root.Buf()...,
+          	)
+
+          	workflowExecuteCLI(
+          		t,
+          		root,
+          		args...,
+          	)
+
+          	workflowVerifyMutation(
+          		t,
+          		root,
+          		before,
+          		expectBinaryChange,
+          		args[0],
+          	)
+          }
+
+          func workflowWriteSmallFFS(
+          	t *testing.T,
+          	fileGUID guid.GUID,
+          	fileType uefi.FVFileType,
+          	name string,
+          ) string {
+          	t.Helper()
+
+          	previousPolarity := uefi.Attributes.ErasePolarity
+          	uefi.Attributes.ErasePolarity = 0xFF
+          	defer func() {
+          		uefi.Attributes.ErasePolarity = previousPolarity
+          	}()
+
+          	section, err := uefi.CreateSection(
+          		uefi.SectionTypeRaw,
+          		[]byte("workflow "+name),
+          		nil,
+          		nil,
+          	)
+          	if err != nil {
+          		t.Fatalf(
+          			"creating %s section failed: %v",
+          			name,
+          			err,
+          		)
+          	}
+
+          	file := &uefi.File{
+          		Sections: []*uefi.Section{
+          			section,
+          		},
+          	}
+          	file.Header.GUID = fileGUID
+          	file.Header.Type = fileType
+          	file.Header.SetState(uefi.FileStateValid)
+
+          	assemble := &Assemble{}
+          	if err := assemble.Run(file); err != nil {
+          		t.Fatalf(
+          			"assembling %s FFS failed: %v",
+          			name,
+          			err,
+          		)
+          	}
+
+          	path := filepath.Join(
+          		t.TempDir(),
+          		name+".ffs",
+          	)
+
+          	if err := os.WriteFile(
+          		path,
+          		file.Buf(),
+          		0o600,
+          	); err != nil {
+          		t.Fatalf(
+          			"writing %s FFS failed: %v",
+          			name,
+          			err,
+          		)
+          	}
+
+          	parsed, err := uefi.NewFile(file.Buf())
+          	if err != nil {
+          		t.Fatalf(
+          			"validating %s FFS failed: %v",
+          			name,
+          			err,
+          		)
+          	}
+          	if parsed == nil {
+          		t.Fatalf(
+          			"%s FFS parsed as free space",
+          			name,
+          		)
+          	}
+
+          	return path
+          }
+
+          func workflowPreparedInsertImage(
+          	t *testing.T,
+          ) (
+          	uefi.Firmware,
+          	string,
+          ) {
+          	t.Helper()
+
+          	root := parseImage(t)
+
+          	smallTarget := workflowWriteSmallFFS(
+          		t,
+          		*testGUID,
+          		uefi.FVFileTypeDriver,
+          		"small-target",
+          	)
+
+          	smallDXECore := workflowWriteSmallFFS(
+          		t,
+          		*dxeCoreGUID,
+          		uefi.FVFileTypeDXECore,
+          		"small-dxe-core",
+          	)
+
+          	payloadGUID := guid.MustParse(
+          		"DECAFBAD-1111-2222-3333-444444444444",
+          	)
+
+          	payload := workflowWriteSmallFFS(
+          		t,
+          		*payloadGUID,
+          		uefi.FVFileTypeDriver,
+          		"insert-payload",
+          	)
+
+          	preparedPath := filepath.Join(
+          		t.TempDir(),
+          		"prepared-insert.rom",
+          	)
+
+          	workflowExecuteCLI(
+          		t,
+          		root,
+          		"replace_ffs",
+          		testGUID.String(),
+          		smallTarget,
+          		"replace_ffs",
+          		dxeCoreGUID.String(),
+          		smallDXECore,
+          		"save",
+          		preparedPath,
+          	)
+
+          	data, err := os.ReadFile(preparedPath)
+          	if err != nil {
+          		t.Fatalf(
+          			"reading prepared insert image failed: %v",
+          			err,
+          		)
+          	}
+
+          	prepared, err := uefi.Parse(data)
+          	if err != nil {
+          		t.Fatalf(
+          			"parsing prepared insert image failed: %v",
+          			err,
+          		)
+          	}
+
+          	return prepared, payload
+          }
+
+          func workflowParseNVRAM(
+          	t *testing.T,
+          ) uefi.Firmware {
+          	t.Helper()
+
+          	parser := ParseDir{
+          		BasePath: "../../integration/roms/nvartest/",
+          	}
+
+          	root, err := parser.Parse()
+          	if err != nil {
+          		t.Fatalf(
+          			"parsing NVRAM fixture failed: %v",
+          			err,
+          		)
+          	}
+
+          	assemble := Assemble{}
+          	if err := assemble.Run(root); err != nil {
+          		t.Fatalf(
+          			"assembling NVRAM fixture failed: %v",
+          			err,
+          		)
+          	}
+
+          	return root
+          }
+
+          func workflowRepackFixture(
+          	t *testing.T,
+          ) (
+          	*uefi.FirmwareVolume,
+          	string,
+          ) {
+          	t.Helper()
+
+          	previousPolarity := uefi.Attributes.ErasePolarity
+          	uefi.Attributes.ErasePolarity = 0xFF
+          	t.Cleanup(func() {
+          		uefi.Attributes.ErasePolarity = previousPolarity
+          	})
+
+          	rawSection, err := uefi.CreateSection(
+          		uefi.SectionTypeRaw,
+          		[]byte("workflow repack test"),
+          		nil,
+          		nil,
+          	)
+          	if err != nil {
+          		t.Fatalf(
+          			"creating repack section failed: %v",
+          			err,
+          		)
+          	}
+
+          	fileGUID := guid.MustParse(
+          		"01234567-89AB-CDEF-0123-456789ABCDEF",
+          	)
+
+          	file := &uefi.File{
+          		Sections: []*uefi.Section{
+          			rawSection,
+          		},
+          	}
+          	file.Header.GUID = *fileGUID
+          	file.Header.Type = uefi.FVFileTypeDriver
+          	file.Header.SetState(uefi.FileStateValid)
+
+          	fv, err := createEmptyFirmwareVolume(
+          		0,
+          		16*4096,
+          		nil,
+          	)
+          	if err != nil {
+          		t.Fatalf(
+          			"creating repack firmware volume failed: %v",
+          			err,
+          		)
+          	}
+
+          	fv.Resizable = true
+          	fv.Files = []*uefi.File{
+          		file,
+          	}
+
+          	fv.Modified = false
+
+          	return fv, fileGUID.String()
+          }
+
+          func workflowTightenMEFixture(
+          	t *testing.T,
+          ) (
+          	*uefi.FlashImage,
+          	*uefi.MERegion,
+          	*uefi.BIOSRegion,
+          ) {
+          	t.Helper()
+
+          	previousPolarity := uefi.Attributes.ErasePolarity
+          	t.Cleanup(func() {
+          		uefi.Attributes.ErasePolarity = previousPolarity
+          	})
+
+          	uefi.Attributes.ErasePolarity = 0xFF
+
+          	meRegionDescriptor := &uefi.FlashRegion{
+          		Base:  1,
+          		Limit: 2,
+          	}
+
+          	biosRegionDescriptor := &uefi.FlashRegion{
+          		Base:  3,
+          		Limit: 4,
+          	}
+
+          	meBuffer := make([]byte, 0x2000)
+          	uefi.Erase(
+          		meBuffer,
+          		uefi.Attributes.ErasePolarity,
+          	)
+
+          	meRegion := &uefi.MERegion{
+          		FRegion:         meRegionDescriptor,
+          		RegionType:      uefi.RegionTypeME,
+          		FreeSpaceOffset: 0x1000,
+          	}
+          	meRegion.SetBuf(meBuffer)
+
+          	biosBuffer := make([]byte, 0x2000)
+          	uefi.Erase(
+          		biosBuffer,
+          		uefi.Attributes.ErasePolarity,
+          	)
+
+          	padding, err := uefi.NewBIOSPadding(
+          		biosBuffer,
+          		0,
+          	)
+          	if err != nil {
+          		t.Fatalf(
+          			"creating BIOS padding failed: %v",
+          			err,
+          		)
+          	}
+
+          	biosRegion := &uefi.BIOSRegion{
+          		FRegion:    biosRegionDescriptor,
+          		RegionType: uefi.RegionTypeBIOS,
+          		Length:     0x2000,
+          		Parsed:     true,
+          		Elements: []*uefi.TypedFirmware{
+          			uefi.MakeTyped(padding),
+          		},
+          	}
+
+          	root := &uefi.FlashImage{
+          		FlashSize: 0x5000,
+          		Regions: []*uefi.TypedFirmware{
+          			uefi.MakeTyped(meRegion),
+          			uefi.MakeTyped(biosRegion),
+          		},
+          	}
+
+          	return root, meRegion, biosRegion
+          }
+
+          func TestWorkflowCLIRegistration(
+          	t *testing.T,
+          ) {
+          	expected := []string{
+          		"insert",
+          		"replace_ffs",
+          		"insert_front",
+          		"insert_end",
+          		"insert_dxe",
+          		"insert_after",
+          		"insert_before",
+          		"remove",
+          		"remove_pad",
+          		"remove_dxes_except",
+          		"replace_pe32",
+          		"create-fv",
+          		"repack",
+          		"invalidate_nvar",
+          		"invalidate_nvar_except",
+          		"nvram-compact",
+          		"dxecleaner",
+          		"dxecleaner_blacklist",
+          		"tighten_me",
+          		"flatten",
+          	}
+
+          	for _, name := range expected {
+          		if _, ok := visitorRegistry[name]; !ok {
+          			t.Errorf(
+          				"CLI command %q is not registered",
+          				name,
+          			)
+          		}
+          	}
+          }
+
+          func TestWorkflowCLIInsertCommands(
+          	t *testing.T,
+          ) {
+          	tests := []struct {
+          		name string
+          		args func(string) []string
+          	}{
+          		{
+          			name: "insert_file_after",
+          			args: func(payload string) []string {
+          				return []string{
+          					"insert",
+          					"file",
+          					payload,
+          					"after",
+          					testGUID.String(),
+          				}
+          			},
+          		},
+          		{
+          			name: "insert_pad_before",
+          			args: func(string) []string {
+          				return []string{
+          					"insert",
+          					"pad_file",
+          					"256",
+          					"before",
+          					testGUID.String(),
+          				}
+          			},
+          		},
+          		{
+          			name: "replace_ffs",
+          			args: func(payload string) []string {
+          				return []string{
+          					"replace_ffs",
+          					testGUID.String(),
+          					payload,
+          				}
+          			},
+          		},
+          		{
+          			name: "insert_front",
+          			args: func(payload string) []string {
+          				return []string{
+          					"insert_front",
+          					testGUID.String(),
+          					payload,
+          				}
+          			},
+          		},
+          		{
+          			name: "insert_end",
+          			args: func(payload string) []string {
+          				return []string{
+          					"insert_end",
+          					testGUID.String(),
+          					payload,
+          				}
+          			},
+          		},
+          		{
+          			name: "insert_dxe",
+          			args: func(payload string) []string {
+          				return []string{
+          					"insert_dxe",
+          					payload,
+          				}
+          			},
+          		},
+          		{
+          			name: "insert_after",
+          			args: func(payload string) []string {
+          				return []string{
+          					"insert_after",
+          					testGUID.String(),
+          					payload,
+          				}
+          			},
+          		},
+          		{
+          			name: "insert_before",
+          			args: func(payload string) []string {
+          				return []string{
+          					"insert_before",
+          					testGUID.String(),
+          					payload,
+          				}
+          			},
+          		},
+          	}
+
+          	for _, test := range tests {
+          		t.Run(test.name, func(t *testing.T) {
+          			root, payload :=
+          				workflowPreparedInsertImage(t)
+
+          			workflowRunMutation(
+          				t,
+          				root,
+          				true,
+          				test.args(payload)...,
+          			)
+          		})
+          	}
+          }
+
+          func TestWorkflowCLIRemoveCommands(
+          	t *testing.T,
+          ) {
+          	t.Run("remove", func(t *testing.T) {
+          		root := parseImage(t)
+
+          		workflowRunMutation(
+          			t,
+          			root,
+          			true,
+          			"remove",
+          			testGUID.String(),
+          		)
+          	})
+
+          	t.Run("remove_pad", func(t *testing.T) {
+          		root := parseImage(t)
+
+          		workflowRunMutation(
+          			t,
+          			root,
+          			true,
+          			"remove_pad",
+          			testGUID.String(),
+          		)
+          	})
+
+          	t.Run(
+          		"remove_dxes_except",
+          		func(t *testing.T) {
+          			whitelist := filepath.Join(
+          				t.TempDir(),
+          				"dxe-whitelist.txt",
+          			)
+
+          			if err := os.WriteFile(
+          				whitelist,
+          				[]byte(
+          					dxeCoreGUID.String() + "\n",
+          				),
+          				0o600,
+          			); err != nil {
+          				t.Fatal(err)
+          			}
+
+          			root := parseImage(t)
+
+          			workflowRunMutation(
+          				t,
+          				root,
+          				true,
+          				"remove_dxes_except",
+          				whitelist,
+          			)
+          		},
+          	)
+          }
+
+          func TestWorkflowCLIReplacePE32(
+          	t *testing.T,
+          ) {
+          	replacement := filepath.Join(
+          		t.TempDir(),
+          		"replacement.bin",
+          	)
+
+          	if err := os.WriteFile(
+          		replacement,
+          		[]byte("MZworkflow"),
+          		0o600,
+          	); err != nil {
+          		t.Fatal(err)
+          	}
+
+          	root := parseImage(t)
+
+          	workflowRunMutation(
+          		t,
+          		root,
+          		true,
+          		"replace_pe32",
+          		testGUID.String(),
+          		replacement,
+          	)
+
+          	state := workflowCollectModified(t, root)
+          	if state.sections == 0 {
+          		t.Fatal(
+          			"replace_pe32 did not mark a section modified",
+          		)
+          	}
+          }
+
+          func TestWorkflowCLICreateFV(
+          	t *testing.T,
+          ) {
+          	previousPolarity := uefi.Attributes.ErasePolarity
+          	t.Cleanup(func() {
+          		uefi.Attributes.ErasePolarity = previousPolarity
+          	})
+
+          	uefi.Attributes.ErasePolarity = 0xFF
+
+          	buffer := make([]byte, 0x10000)
+          	uefi.Erase(
+          		buffer,
+          		uefi.Attributes.ErasePolarity,
+          	)
+
+          	region, err := uefi.NewBIOSRegion(
+          		buffer,
+          		nil,
+          		uefi.RegionTypeBIOS,
+          	)
+          	if err != nil {
+          		t.Fatal(err)
+          	}
+
+          	workflowRunMutation(
+          		t,
+          		region,
+          		true,
+          		"create-fv",
+          		"0x8000",
+          		"0x1000",
+          		"DECAFBAD-0000-0000-0000-000000000000",
+          	)
+
+          	biosRegion := region.(*uefi.BIOSRegion)
+          	if !biosRegion.Modified {
+          		t.Fatal(
+          			"create-fv did not mark the BIOS region modified",
+          		)
+          	}
+          }
+
+          func TestWorkflowCLIRepack(
+          	t *testing.T,
+          ) {
+          	root, target := workflowRepackFixture(t)
+
+          	workflowExecuteCLI(
+          		t,
+          		root,
+          		"repack",
+          		target,
+          	)
+
+          	if !root.Modified {
+          		t.Fatal(
+          			"repack did not mark the firmware volume modified",
+          		)
+          	}
+
+          	if len(root.Files) != 1 {
+          		t.Fatalf(
+          			"repack produced %d files; expected 1",
+          			len(root.Files),
+          		)
+          	}
+
+          	if root.Files[0].Header.Type !=
+          		uefi.FVFileTypeVolumeImage {
+          		t.Fatalf(
+          			"repack produced file type %v; expected %v",
+          			root.Files[0].Header.Type,
+          			uefi.FVFileTypeVolumeImage,
+          		)
+          	}
+
+          	workflowSave(t, root)
+          }
+
+          func TestWorkflowCLINVRAMCommands(
+          	t *testing.T,
+          ) {
+          	runInvalidation := func(
+          		t *testing.T,
+          		args ...string,
+          	) {
+          		t.Helper()
+
+          		root := workflowParseNVRAM(t)
+          		before := append(
+          			[]byte(nil),
+          			root.Buf()...,
+          		)
+
+          		parsed := workflowExecuteCLI(
+          			t,
+          			root,
+          			args...,
+          		)
+
+          		if len(parsed) != 1 {
+          			t.Fatalf(
+          				"ParseCLI(%q) produced %d visitors; expected 1",
+          				args,
+          				len(parsed),
+          			)
+          		}
+
+          		invalidation, ok := parsed[0].(*NVarInvalidate)
+          		if !ok {
+          			t.Fatalf(
+          				"ParseCLI(%q) produced visitor type %T",
+          				args,
+          				parsed[0],
+          			)
+          		}
+
+          		if len(invalidation.Matches) == 0 {
+          			t.Fatalf(
+          				"%s did not match any objects",
+          				args[0],
+          			)
+          		}
+
+          		matchedNVars := 0
+          		for _, match := range invalidation.Matches {
+          			nvar, ok := match.(*uefi.NVar)
+          			if !ok {
+          				continue
+          			}
+
+          			matchedNVars++
+
+          			if nvar.Type != uefi.InvalidNVarEntry {
+          				t.Fatalf(
+          					"%s left NVAR %q with type %v",
+          					args[0],
+          					nvar.Name,
+          					nvar.Type,
+          				)
+          			}
+
+          			if !nvar.Modified {
+          				t.Fatalf(
+          					"%s did not mark NVAR %q modified",
+          					args[0],
+          					nvar.Name,
+          				)
+          			}
+          		}
+
+          		if matchedNVars == 0 {
+          			t.Fatalf(
+          				"%s did not match any NVAR entries",
+          				args[0],
+          			)
+          		}
+
+          		workflowExecuteCLI(
+          			t,
+          			root,
+          			"nvram-compact",
+          		)
+
+          		workflowVerifyMutation(
+          			t,
+          			root,
+          			before,
+          			true,
+          			args[0]+" + nvram-compact",
+          		)
+          	}
+
+          	t.Run("invalidate_nvar", func(t *testing.T) {
+          		runInvalidation(
+          			t,
+          			"invalidate_nvar",
+          			"Test0",
+          		)
+          	})
+
+          	t.Run(
+          		"invalidate_nvar_except",
+          		func(t *testing.T) {
+          			whitelist := filepath.Join(
+          				t.TempDir(),
+          				"nvar-whitelist.txt",
+          			)
+
+          			if err := os.WriteFile(
+          				whitelist,
+          				[]byte("Test0\n"),
+          				0o600,
+          			); err != nil {
+          				t.Fatal(err)
+          			}
+
+          			runInvalidation(
+          				t,
+          				"invalidate_nvar_except",
+          				whitelist,
+          			)
+          		},
+          	)
+
+          	t.Run("nvram-compact", func(t *testing.T) {
+          		root := workflowParseNVRAM(t)
+
+          		workflowRunMutation(
+          			t,
+          			root,
+          			true,
+          			"nvram-compact",
+          		)
+
+          		state := workflowCollectModified(t, root)
+          		if state.nvarStores == 0 {
+          			t.Fatal(
+          				"nvram-compact did not mark an NVar store modified",
+          			)
+          		}
+          	})
+          }
+
+          func workflowRunDXECleaner(
+          	t *testing.T,
+          	args ...string,
+          ) {
+          	t.Helper()
+
+          	root := parseImage(t)
+          	before := append(
+          		[]byte(nil),
+          		root.Buf()...,
+          	)
+
+          	parsed := workflowParseCLI(t, args...)
+          	if len(parsed) != 1 {
+          		t.Fatalf(
+          			"ParseCLI(%q) produced %d visitors; expected 1",
+          			args,
+          			len(parsed),
+          		)
+          	}
+
+          	cleaner, ok := parsed[0].(*DXECleaner)
+          	if !ok {
+          		t.Fatalf(
+          			"ParseCLI(%q) produced visitor type %T",
+          			args,
+          			parsed[0],
+          		)
+          	}
+
+          	cleaner.Test = func(
+          		uefi.Firmware,
+          	) (bool, error) {
+          		return true, nil
+          	}
+          	cleaner.W = io.Discard
+
+          	if err := ExecuteCLI(root, parsed); err != nil {
+          		t.Fatalf(
+          			"ExecuteCLI(%q) failed: %v",
+          			args,
+          			err,
+          		)
+          	}
+
+          	if len(cleaner.Removals) == 0 {
+          		t.Fatalf(
+          			"%s did not remove any DXE files",
+          			args[0],
+          		)
+          	}
+
+          	workflowVerifyMutation(
+          		t,
+          		root,
+          		before,
+          		true,
+          		args[0],
+          	)
+          }
+
+          func TestWorkflowCLIDXECleanerCommands(
+          	t *testing.T,
+          ) {
+          	t.Run("dxecleaner", func(t *testing.T) {
+          		workflowRunDXECleaner(
+          			t,
+          			"dxecleaner",
+          			"/bin/true",
+          		)
+          	})
+
+          	t.Run(
+          		"dxecleaner_blacklist",
+          		func(t *testing.T) {
+          			blacklist := filepath.Join(
+          				t.TempDir(),
+          				"empty-blacklist.txt",
+          			)
+
+          			if err := os.WriteFile(
+          				blacklist,
+          				nil,
+          				0o600,
+          			); err != nil {
+          				t.Fatal(err)
+          			}
+
+          			workflowRunDXECleaner(
+          				t,
+          				"dxecleaner_blacklist",
+          				"/bin/true",
+          				blacklist,
+          			)
+          		},
+          	)
+          }
+
+          func TestWorkflowCLITightenME(
+          	t *testing.T,
+          ) {
+          	root, meRegion, biosRegion :=
+          		workflowTightenMEFixture(t)
+
+          	oldMELimit := meRegion.FRegion.Limit
+          	oldBIOSBase := biosRegion.FRegion.Base
+          	oldBIOSLength := biosRegion.Length
+
+          	workflowExecuteCLI(
+          		t,
+          		root,
+          		"tighten_me",
+          	)
+
+          	if !biosRegion.Modified {
+          		t.Fatal(
+          			"tighten_me did not mark the BIOS region modified",
+          		)
+          	}
+
+          	if meRegion.FRegion.Limit >= oldMELimit {
+          		t.Fatalf(
+          			"tighten_me did not reduce the ME region limit: old=%#x new=%#x",
+          			oldMELimit,
+          			meRegion.FRegion.Limit,
+          		)
+          	}
+
+          	if biosRegion.FRegion.Base >= oldBIOSBase {
+          		t.Fatalf(
+          			"tighten_me did not lower the BIOS region base: old=%#x new=%#x",
+          			oldBIOSBase,
+          			biosRegion.FRegion.Base,
+          		)
+          	}
+
+          	if biosRegion.Length <= oldBIOSLength {
+          		t.Fatalf(
+          			"tighten_me did not expand the BIOS region: old=%#x new=%#x",
+          			oldBIOSLength,
+          			biosRegion.Length,
+          		)
+          	}
+
+          	if len(biosRegion.Elements) != 2 {
+          		t.Fatalf(
+          			"tighten_me produced %d BIOS elements; expected 2",
+          			len(biosRegion.Elements),
+          		)
+          	}
+          }
+
+          func TestWorkflowCLIFlattenReadOnly(
+          	t *testing.T,
+          ) {
+          	root := parseImage(t)
+          	before := append(
+          		[]byte(nil),
+          		root.Buf()...,
+          	)
+
+          	matches := find(t, root, testGUID)
+          	if len(matches) != 1 {
+          		t.Fatalf(
+          			"found %d test files; expected 1",
+          			len(matches),
+          		)
+          	}
+
+          	file, ok := matches[0].(*uefi.File)
+          	if !ok {
+          		t.Fatalf(
+          			"matched object has type %T; expected *uefi.File",
+          			matches[0],
+          		)
+          	}
+
+          	sectionCount := len(file.Sections)
+
+          	parsed := workflowParseCLI(
+          		t,
+          		"flatten",
+          	)
+
+          	if len(parsed) != 1 {
+          		t.Fatalf(
+          			"flatten produced %d visitors; expected 1",
+          			len(parsed),
+          		)
+          	}
+
+          	flatten, ok := parsed[0].(*Flatten)
+          	if !ok {
+          		t.Fatalf(
+          			"flatten produced visitor type %T",
+          			parsed[0],
+          		)
+          	}
+          	flatten.W = io.Discard
+
+          	if err := ExecuteCLI(root, parsed); err != nil {
+          		t.Fatalf(
+          			"flatten failed: %v",
+          			err,
+          		)
+          	}
+
+          	if len(flatten.List) == 0 {
+          		t.Fatal(
+          			"flatten produced an empty list",
+          		)
+          	}
+
+          	if !bytes.Equal(before, root.Buf()) {
+          		t.Fatal(
+          			"flatten modified the root binary buffer",
+          		)
+          	}
+
+          	if len(file.Sections) != sectionCount {
+          		t.Fatalf(
+          			"flatten changed the file section count from %d to %d",
+          			sectionCount,
+          			len(file.Sections),
+          		)
+          	}
+          }
+          GO
+
+          gofmt -w \
+            "$CANDIDATE_SOURCE/pkg/visitors/preserve_cli_workflow_test.go"
+
+          cat > "$RESULTS/build/cli-mutation-coverage.txt" <<'EOF'
+          CLI commands executed by preserve_cli_workflow_test.go
+          =====================================================
+
+          insert file
+          insert pad_file
+          replace_ffs
+          insert_front
+          insert_end
+          insert_dxe
+          insert_after
+          insert_before
+          remove
+          remove_pad
+          remove_dxes_except
+          replace_pe32
+          create-fv
+          repack
+          invalidate_nvar
+          invalidate_nvar_except
+          nvram-compact
+          dxecleaner
+          dxecleaner_blacklist
+          tighten_me
+
+          Read-only regression check
+          ==========================
+
+          flatten
+          EOF
+
+          test -s \
+            "$CANDIDATE_SOURCE/pkg/visitors/preserve_cli_workflow_test.go"
+
+      - name: Download Go dependencies
+        run: |
+          set -Eeuo pipefail
+
+          (
+            cd "$BASELINE_SOURCE"
+            go mod download
+          )
+
+          (
+            cd "$CANDIDATE_SOURCE"
+            go mod download
+          )
+
+      - name: Run complete visitor tests
+        run: |
+          set -Eeuo pipefail
+
+          (
+            cd "$BASELINE_SOURCE"
+
+            go test \
+              -count=1 \
+              ./pkg/compression \
+              ./pkg/visitors
+          ) 2>&1 | tee \
+            "$RESULTS/build/lzma-only-tests.log"
+
+          (
+            cd "$CANDIDATE_SOURCE"
+
+            go test \
+              -count=1 \
+              -coverprofile="$RESULTS/build/lzma-preserve.coverage" \
+              ./pkg/compression \
+              ./pkg/visitors
+          ) 2>&1 | tee \
+            "$RESULTS/build/lzma-preserve-tests.log"
+
+          (
+            cd "$CANDIDATE_SOURCE"
+
+            go tool cover \
+              -func="$RESULTS/build/lzma-preserve.coverage"
+          ) | tee \
+            "$RESULTS/build/lzma-preserve-coverage.txt"
+
+      - name: Build UTK variants and exact FFS verifier
+        run: |
+          set -Eeuo pipefail
+
+          build_variant() {
+            local name="$1"
+            local source="$2"
+            local output="$3"
+
+            (
+              cd "$source/cmds/utk"
+
+              /usr/bin/time \
+                --output="$RESULTS/build/${name}.time" \
+                --format=$'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kb=%M' \
+                env \
+                  CGO_ENABLED=0 \
+                  GOOS=linux \
+                  GOARCH=amd64 \
+                  GOTOOLCHAIN=local \
+                  go build \
+                    -a \
+                    -trimpath \
+                    -installsuffix cgo \
+                    -o "$output" \
+                    .
+            )
+          }
+
+          go version \
+            | tee "$RESULTS/build/go-version.txt"
+
+          build_variant \
+            "lzma-only" \
+            "$BASELINE_SOURCE" \
+            "$BASELINE_BIN"
+
+          build_variant \
+            "lzma-preserve" \
+            "$CANDIDATE_SOURCE" \
+            "$CANDIDATE_BIN"
+
+          VERIFY_SOURCE="$CANDIDATE_SOURCE/cmds/verify-ffs"
+
+          mkdir -p "$VERIFY_SOURCE"
+
+          cat > "$VERIFY_SOURCE/main.go" <<'GO'
+          package main
+
+          import (
+          	"bytes"
+          	"crypto/sha256"
+          	"fmt"
+          	"os"
+
+          	"github.com/linuxboot/fiano/pkg/uefi"
+          	"github.com/linuxboot/fiano/pkg/visitors"
+          )
+
+          func fatalf(format string, args ...interface{}) {
+          	fmt.Fprintf(os.Stderr, format+"\n", args...)
+          	os.Exit(1)
+          }
+
+          func main() {
+          	if len(os.Args) != 3 {
+          		fmt.Fprintf(
+          			os.Stderr,
+          			"usage: %s EXPECTED_FFS FIRMWARE\n",
+          			os.Args[0],
+          		)
+          		os.Exit(2)
+          	}
+
+          	expectedPath := os.Args[1]
+          	firmwarePath := os.Args[2]
+
+          	expectedData, err := os.ReadFile(expectedPath)
+          	if err != nil {
+          		fatalf("read expected FFS: %v", err)
+          	}
+
+          	expected, err := uefi.NewFile(expectedData)
+          	if err != nil {
+          		fatalf("parse expected FFS: %v", err)
+          	}
+          	if expected == nil {
+          		fatalf("expected FFS parsed as free space")
+          	}
+
+          	firmwareData, err := os.ReadFile(firmwarePath)
+          	if err != nil {
+          		fatalf("read firmware: %v", err)
+          	}
+
+          	root, err := uefi.Parse(firmwareData)
+          	if err != nil {
+          		fatalf("parse firmware: %v", err)
+          	}
+
+          	match, err := visitors.FindExactlyOne(
+          		root,
+          		visitors.FindFileGUIDPredicate(
+          			expected.Header.GUID,
+          		),
+          	)
+          	if err != nil {
+          		fatalf("find replacement FFS: %v", err)
+          	}
+
+          	actual, ok := match.(*uefi.File)
+          	if !ok {
+          		fatalf(
+          			"matched object has type %T, expected *uefi.File",
+          			match,
+          		)
+          	}
+
+          	if !bytes.Equal(actual.Buf(), expectedData) {
+          		expectedHash := sha256.Sum256(expectedData)
+          		actualHash := sha256.Sum256(actual.Buf())
+
+          		fatalf(
+          			"FFS differs: expected size=%d sha256=%x, actual size=%d sha256=%x",
+          			len(expectedData),
+          			expectedHash,
+          			len(actual.Buf()),
+          			actualHash,
+          		)
+          	}
+
+          	hash := sha256.Sum256(actual.Buf())
+
+          	fmt.Printf(
+          		"exact FFS match: guid=%s size=%d sha256=%x\n",
+          		actual.Header.GUID.String(),
+          		len(actual.Buf()),
+          		hash,
+          	)
+          }
+          GO
+
+          (
+            cd "$CANDIDATE_SOURCE"
+
+            env \
+              CGO_ENABLED=0 \
+              GOOS=linux \
+              GOARCH=amd64 \
+              GOTOOLCHAIN=local \
+              go build \
+                -trimpath \
+                -o "$VERIFY_FFS_BIN" \
+                ./cmds/verify-ffs
+          )
+
+          chmod +x \
+            "$BASELINE_BIN" \
+            "$CANDIDATE_BIN" \
+            "$VERIFY_FFS_BIN"
+
+          {
+            echo "## Binary hashes"
+
+            sha256sum \
+              "$BASELINE_BIN" \
+              "$CANDIDATE_BIN" \
+              "$VERIFY_FFS_BIN"
+
+            echo
+            echo "## Binary sizes"
+
+            stat \
+              --printf='%n %s bytes\n' \
+              "$BASELINE_BIN" \
+              "$CANDIDATE_BIN" \
+              "$VERIFY_FFS_BIN"
+          } | tee "$RESULTS/build/binaries.txt"
+
+      - name: Download exact ROM test assets
+        run: |
+          set -Eeuo pipefail
+
+          ASSET_DIR="$RESULTS/assets"
+          OVMF_DIR="$RUNNER_TEMP/ovmf"
+
+          mkdir -p \
+            "$ASSET_DIR" \
+            "$OVMF_DIR"
+
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-delay 2 \
+            --output "$ASSET_DIR/qemu.ffs" \
+            "https://raw.githubusercontent.com/qemus/qemu/1ba2415801c647e7c9ee3ce9bf8a3de398832775/web/img/qemu.ffs"
+
+          echo \
+            "270198104fc084a83f721283e98f7c930ea5f3e83489e98117d546e2a7d29842  $ASSET_DIR/qemu.ffs" \
+            | sha256sum --check -
+
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-delay 2 \
+            --output "$ASSET_DIR/ovmf-generic_2025.11-5_all.deb" \
+            "https://deb.debian.org/debian/pool/main/e/edk2/ovmf-generic_2025.11-5_all.deb"
+
+          dpkg-deb \
+            --extract \
+            "$ASSET_DIR/ovmf-generic_2025.11-5_all.deb" \
+            "$OVMF_DIR"
+
+          ROM="$(
+            find \
+              "$OVMF_DIR" \
+              -type f \
+              -name 'OVMF_CODE_4M.fd' \
+              -print \
+              -quit
+          )"
+
+          VARS="$(
+            find \
+              "$OVMF_DIR" \
+              -type f \
+              -name 'OVMF_VARS_4M.fd' \
+              -print \
+              -quit
+          )"
+
+          if [[ -z "$ROM" || ! -s "$ROM" ]]; then
+            echo "OVMF_CODE_4M.fd was not found." >&2
+            exit 1
+          fi
+
+          if [[ -z "$VARS" || ! -s "$VARS" ]]; then
+            echo "OVMF_VARS_4M.fd was not found." >&2
+            exit 1
+          fi
+
+          echo \
+            "0082274a5b06d3b27e34972f2ec6915784033d41dd3c946bd807f0ac6525e699  $ROM" \
+            | sha256sum --check -
+
+          OVMF_ROOT="$(dirname "$ROM")"
+
+          cp \
+            "$ROM" \
+            "$ASSET_DIR/OVMF_CODE_4M.fd"
+
+          cp \
+            "$VARS" \
+            "$ASSET_DIR/OVMF_VARS_4M.fd"
+
+          {
+            echo "ROM=$ROM"
+            echo "VARS=$VARS"
+            echo "OVMF_ROOT=$OVMF_ROOT"
+            echo "QEMU_FFS=$ASSET_DIR/qemu.ffs"
+          } >> "$GITHUB_ENV"
+
+          {
+            sha256sum \
+              "$ASSET_DIR/OVMF_CODE_4M.fd" \
+              "$ASSET_DIR/OVMF_VARS_4M.fd" \
+              "$ASSET_DIR/qemu.ffs"
+
+            echo
+
+            stat \
+              --printf='%n %s bytes\n' \
+              "$ASSET_DIR/OVMF_CODE_4M.fd" \
+              "$ASSET_DIR/OVMF_VARS_4M.fd" \
+              "$ASSET_DIR/qemu.ffs"
+          } | tee "$ASSET_DIR/assets.txt"
+
+      - name: Run primary ROM comparison
+        run: |
+          set -Eeuo pipefail
+
+          OUTPUT_DIR="$RESULTS/outputs/primary"
+
+          mkdir -p "$OUTPUT_DIR"
+
+          BASELINE_NOOP="$OUTPUT_DIR/lzma-only-noop.fd"
+          CANDIDATE_NOOP="$OUTPUT_DIR/lzma-preserve-noop.fd"
+          BASELINE_REPLACE="$OUTPUT_DIR/lzma-only-replace.fd"
+          CANDIDATE_REPLACE="$OUTPUT_DIR/lzma-preserve-replace.fd"
+          CANDIDATE_RESAVE="$OUTPUT_DIR/lzma-preserve-resave.fd"
+
+          "$BASELINE_BIN" \
+            -lzma-level="$LZMA_LEVEL" \
+            "$ROM" \
+            save \
+            "$BASELINE_NOOP"
+
+          "$CANDIDATE_BIN" \
+            -lzma-level="$LZMA_LEVEL" \
+            "$ROM" \
+            save \
+            "$CANDIDATE_NOOP"
+
+          cmp \
+            "$ROM" \
+            "$CANDIDATE_NOOP"
+
+          "$BASELINE_BIN" \
+            -lzma-level="$LZMA_LEVEL" \
+            "$ROM" \
+            replace_ffs \
+            LogoDXE \
+            "$QEMU_FFS" \
+            save \
+            "$BASELINE_REPLACE"
+
+          "$CANDIDATE_BIN" \
+            -lzma-level="$LZMA_LEVEL" \
+            "$ROM" \
+            replace_ffs \
+            LogoDXE \
+            "$QEMU_FFS" \
+            save \
+            "$CANDIDATE_REPLACE"
+
+          cmp \
+            "$BASELINE_REPLACE" \
+            "$CANDIDATE_REPLACE"
+
+          "$BASELINE_BIN" \
+            "$BASELINE_NOOP" \
+            validate
+
+          "$CANDIDATE_BIN" \
+            "$CANDIDATE_NOOP" \
+            validate
+
+          "$BASELINE_BIN" \
+            "$BASELINE_REPLACE" \
+            validate
+
+          "$CANDIDATE_BIN" \
+            "$CANDIDATE_REPLACE" \
+            validate
+
+          "$VERIFY_FFS_BIN" \
+            "$QEMU_FFS" \
+            "$BASELINE_REPLACE"
+
+          "$VERIFY_FFS_BIN" \
+            "$QEMU_FFS" \
+            "$CANDIDATE_REPLACE"
+
+          "$CANDIDATE_BIN" \
+            "$CANDIDATE_REPLACE" \
+            save \
+            "$CANDIDATE_RESAVE"
+
+          cmp \
+            "$CANDIDATE_REPLACE" \
+            "$CANDIDATE_RESAVE"
+
+          {
+            echo "original=$(sha256sum "$ROM")"
+            echo "lzma_only_noop=$(sha256sum "$BASELINE_NOOP")"
+            echo "preserve_noop=$(sha256sum "$CANDIDATE_NOOP")"
+            echo "lzma_only_replace=$(sha256sum "$BASELINE_REPLACE")"
+            echo "preserve_replace=$(sha256sum "$CANDIDATE_REPLACE")"
+            echo "preserve_resave=$(sha256sum "$CANDIDATE_RESAVE")"
+          } | tee "$RESULTS/primary-comparison.txt"
+
+          {
+            echo "BASELINE_REPLACE=$BASELINE_REPLACE"
+            echo "CANDIDATE_REPLACE=$CANDIDATE_REPLACE"
+          } >> "$GITHUB_ENV"
+
+      - name: Run deterministic output checks
+        run: |
+          set -Eeuo pipefail
+
+          OUTPUT_DIR="$RESULTS/outputs/determinism"
+
+          mkdir -p "$OUTPUT_DIR"
+
+          check_variant() {
+            local name="$1"
+            local binary="$2"
+            local reference=""
+
+            for run in 1 2 3 4 5; do
+              local output="$OUTPUT_DIR/${name}-${run}.fd"
+
+              "$binary" \
+                -lzma-level="$LZMA_LEVEL" \
+                "$ROM" \
+                replace_ffs \
+                LogoDXE \
+                "$QEMU_FFS" \
+                save \
+                "$output"
+
+              "$VERIFY_FFS_BIN" \
+                "$QEMU_FFS" \
+                "$output"
+
+              if [[ -z "$reference" ]]; then
+                reference="$output"
+              else
+                cmp \
+                  "$reference" \
+                  "$output"
+              fi
+            done
+          }
+
+          check_variant \
+            "lzma-only" \
+            "$BASELINE_BIN"
+
+          check_variant \
+            "lzma-preserve" \
+            "$CANDIDATE_BIN"
+
+          sha256sum \
+            "$OUTPUT_DIR"/*.fd \
+            | tee "$RESULTS/determinism.txt"
+
+      - name: Run compression matrix
+        if: env.RUN_MATRIX == 'true'
+        run: |
+          set -Eeuo pipefail
+
+          OUTPUT_DIR="$RESULTS/outputs/compression-matrix"
+
+          mkdir -p "$OUTPUT_DIR"
+
+          {
+            echo "backend,level,sha256"
+          } > "$RESULTS/compression-matrix.csv"
+
+          for backend in system internal; do
+            for level in {0..9}; do
+              args=(
+                "-lzma-level=$level"
+              )
+
+              if [[ "$backend" == "internal" ]]; then
+                args+=("-xzPath=")
+              fi
+
+              baseline="$OUTPUT_DIR/lzma-only-${backend}-${level}.fd"
+              candidate="$OUTPUT_DIR/lzma-preserve-${backend}-${level}.fd"
+
+              "$BASELINE_BIN" \
+                "${args[@]}" \
+                "$ROM" \
+                replace_ffs \
+                LogoDXE \
+                "$QEMU_FFS" \
+                save \
+                "$baseline"
+
+              "$CANDIDATE_BIN" \
+                "${args[@]}" \
+                "$ROM" \
+                replace_ffs \
+                LogoDXE \
+                "$QEMU_FFS" \
+                save \
+                "$candidate"
+
+              "$BASELINE_BIN" \
+                "$baseline" \
+                validate
+
+              "$CANDIDATE_BIN" \
+                "$candidate" \
+                validate
+
+              cmp \
+                "$baseline" \
+                "$candidate"
+
+              "$VERIFY_FFS_BIN" \
+                "$QEMU_FFS" \
+                "$baseline"
+
+              "$VERIFY_FFS_BIN" \
+                "$QEMU_FFS" \
+                "$candidate"
+
+              printf '%s,%s,%s\n' \
+                "$backend" \
+                "$level" \
+                "$(sha256sum "$candidate" | awk '{print $1}')" \
+                >> "$RESULTS/compression-matrix.csv"
+            done
+          done
+
+      - name: Run OVMF regression matrix
+        run: |
+          set -Eeuo pipefail
+
+          OUTPUT_DIR="$RESULTS/outputs/ovmf-regression"
+
+          mkdir -p "$OUTPUT_DIR"
+
+          {
+            echo "rom,noop_sha256,replacement_sha256"
+          } > "$RESULTS/ovmf-regression.csv"
+
+          found=0
+
+          while IFS= read -r test_rom; do
+            found=1
+
+            name="$(basename "$test_rom")"
+            slug="${name//[^A-Za-z0-9_.-]/-}"
+
+            candidate_noop="$OUTPUT_DIR/${slug}-noop.fd"
+            baseline_replace="$OUTPUT_DIR/${slug}-baseline.fd"
+            candidate_replace="$OUTPUT_DIR/${slug}-candidate.fd"
+
+            "$CANDIDATE_BIN" \
+              -lzma-level="$LZMA_LEVEL" \
+              "$test_rom" \
+              save \
+              "$candidate_noop"
+
+            cmp \
+              "$test_rom" \
+              "$candidate_noop"
+
+            "$BASELINE_BIN" \
+              -lzma-level="$LZMA_LEVEL" \
+              "$test_rom" \
+              replace_ffs \
+              LogoDXE \
+              "$QEMU_FFS" \
+              save \
+              "$baseline_replace"
+
+            "$CANDIDATE_BIN" \
+              -lzma-level="$LZMA_LEVEL" \
+              "$test_rom" \
+              replace_ffs \
+              LogoDXE \
+              "$QEMU_FFS" \
+              save \
+              "$candidate_replace"
+
+            cmp \
+              "$baseline_replace" \
+              "$candidate_replace"
+
+            "$BASELINE_BIN" \
+              "$baseline_replace" \
+              validate
+
+            "$CANDIDATE_BIN" \
+              "$candidate_replace" \
+              validate
+
+            "$VERIFY_FFS_BIN" \
+              "$QEMU_FFS" \
+              "$baseline_replace"
+
+            "$VERIFY_FFS_BIN" \
+              "$QEMU_FFS" \
+              "$candidate_replace"
+
+            printf '%s,%s,%s\n' \
+              "$name" \
+              "$(sha256sum "$candidate_noop" | awk '{print $1}')" \
+              "$(sha256sum "$candidate_replace" | awk '{print $1}')" \
+              >> "$RESULTS/ovmf-regression.csv"
+          done < <(
+            find \
+              "$OVMF_ROOT" \
+              -maxdepth 1 \
+              -type f \
+              -name 'OVMF_CODE_4M*.fd' \
+              -print \
+              | sort
+          )
+
+          if (( found == 0 )); then
+            echo "No OVMF_CODE_4M*.fd files were found." >&2
+            exit 1
+          fi
+
+      - name: Run runtime benchmarks
+        run: |
+          set -Eeuo pipefail
+
+          OUTPUT_DIR="$RUNNER_TEMP/fiano-benchmarks"
+
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+
+          benchmark() {
+            local variant="$1"
+            local binary="$2"
+            local operation="$3"
+            local times="$RESULTS/benchmark/${variant}-${operation}.txt"
+
+            : > "$times"
+
+            for run in $(seq 1 "$RUNS"); do
+              output="$OUTPUT_DIR/${variant}-${operation}-${run}.fd"
+
+              if [[ "$operation" == "noop" ]]; then
+                command=(
+                  "$binary"
+                  "-lzma-level=$LZMA_LEVEL"
+                  "$ROM"
+                  save
+                  "$output"
+                )
+              else
+                command=(
+                  "$binary"
+                  "-lzma-level=$LZMA_LEVEL"
+                  "$ROM"
+                  replace_ffs
+                  LogoDXE
+                  "$QEMU_FFS"
+                  save
+                  "$output"
+                )
+              fi
+
+              /usr/bin/time \
+                --quiet \
+                --format='%e' \
+                --output="$times" \
+                --append \
+                "${command[@]}"
+
+              rm -f "$output"
+            done
+
+            awk \
+              -v variant="$variant" \
+              -v operation="$operation" \
+              '
+                {
+                  total += $1
+                  count++
+                }
+                END {
+                  if (count == 0) {
+                    exit 1
+                  }
+
+                  printf "%s,%s,%d,%.6f\n",
+                    variant,
+                    operation,
+                    count,
+                    total / count
+                }
+              ' \
+              "$times"
+          }
+
+          {
+            echo "variant,operation,runs,mean_seconds"
+
+            benchmark \
+              "lzma-only" \
+              "$BASELINE_BIN" \
+              "noop"
+
+            benchmark \
+              "lzma-preserve" \
+              "$CANDIDATE_BIN" \
+              "noop"
+
+            benchmark \
+              "lzma-only" \
+              "$BASELINE_BIN" \
+              "replace"
+
+            benchmark \
+              "lzma-preserve" \
+              "$CANDIDATE_BIN" \
+              "replace"
+          } | tee "$RESULTS/benchmark.csv"
+
+      - name: Run QEMU boot smoke tests
+        if: env.RUN_BOOT_TEST == 'true'
+        run: |
+          set -Eeuo pipefail
+
+          boot_test() {
+            local name="$1"
+            local firmware="$2"
+            local vars_copy="$RUNNER_TEMP/${name}-vars.fd"
+            local log="$RESULTS/logs/boot-${name}.log"
+
+            cp \
+              "$VARS" \
+              "$vars_copy"
+
+            set +e
+
+            timeout \
+              12s \
+              qemu-system-x86_64 \
+                -machine q35,accel=tcg \
+                -cpu max \
+                -m 256M \
+                -nodefaults \
+                -drive "if=pflash,unit=0,format=raw,readonly=on,file=$firmware" \
+                -drive "if=pflash,unit=1,format=raw,file=$vars_copy" \
+                -display none \
+                -serial none \
+                -monitor none \
+                -no-reboot \
+                -no-shutdown \
+                > "$log" \
+                2>&1
+
+            rc=$?
+
+            set -e
+
+            echo "$name exit code: $rc"
+
+            if (( rc != 124 )); then
+              echo "$name exited before the 12-second timeout." >&2
+              cat "$log" >&2
+              return 1
+            fi
+          }
+
+          boot_test \
+            "lzma-only" \
+            "$BASELINE_REPLACE"
+
+          boot_test \
+            "lzma-preserve" \
+            "$CANDIDATE_REPLACE"
+
+      - name: Publish workflow summary
+        if: always()
+        run: |
+          set -Eeuo pipefail
+
+          {
+            echo "# Fiano ROM comparison"
+            echo
+
+            if [[ -s "$RESULTS/primary-comparison.txt" ]]; then
+              echo "## Primary comparison"
+              echo
+              echo '```text'
+              cat "$RESULTS/primary-comparison.txt"
+              echo '```'
+              echo
+            fi
+
+            if [[ -s "$RESULTS/build/cli-mutation-coverage.txt" ]]; then
+              echo "## CLI mutation coverage"
+              echo
+              echo '```text'
+              cat "$RESULTS/build/cli-mutation-coverage.txt"
+              echo '```'
+              echo
+            fi
+
+            if [[ -s "$RESULTS/benchmark.csv" ]]; then
+              echo "## Runtime benchmark"
+              echo
+              echo '```csv'
+              cat "$RESULTS/benchmark.csv"
+              echo '```'
+              echo
+            fi
+
+            if [[ -s "$RESULTS/compression-matrix.csv" ]]; then
+              echo "## Compression matrix"
+              echo
+              echo '```csv'
+              cat "$RESULTS/compression-matrix.csv"
+              echo '```'
+              echo
+            fi
+
+            if [[ -s "$RESULTS/ovmf-regression.csv" ]]; then
+              echo "## OVMF regression matrix"
+              echo
+              echo '```csv'
+              cat "$RESULTS/ovmf-regression.csv"
+              echo '```'
+              echo
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "event=$GITHUB_EVENT_NAME"
+            echo "ref=$GITHUB_REF"
+            echo "sha=$GITHUB_SHA"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+          } > "$RESULTS/workflow-context.txt"
+
+      - name: Upload comparison artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fiano-rom-comparison-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/results
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
