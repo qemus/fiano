@@ -1,0 +1,77 @@
+name: Tag module
+
+on:
+  push:
+    branches:
+      - module
+
+concurrency:
+  group: module-tag
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Tag module version
+    runs-on: ubuntu-latest
+
+    steps:
+      -
+        name: Checkout module
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+
+      -
+        name: Increment module version
+        uses: action-pack/increment@v2
+        id: increment
+        with:
+          name: MODULE
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+
+      -
+        name: Create module tag
+        env:
+          MODULE: ${{ steps.increment.outputs.value }}
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          mapfile -t tags < <(
+            git tag \
+              --merged origin/master \
+              --sort=-version:refname
+          )
+
+          release=""
+
+          for candidate in "${tags[@]}"; do
+            if [[ "$candidate" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              release="$candidate"
+              break
+            fi
+          done
+
+          if [[ -z "$release" ]]; then
+            echo "::error::No release tag matching X.Y.Z was found on master."
+            exit 1
+          fi
+
+          tag="v${release}-${MODULE}"
+
+          if git show-ref \
+            --verify \
+            --quiet \
+            "refs/tags/${tag}"; then
+            echo "::error::Tag ${tag} already exists."
+            exit 1
+          fi
+
+          git tag "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/${tag}"
+
+          echo "Created module tag ${tag} for ${GITHUB_SHA}."
