@@ -125,18 +125,10 @@ jobs:
           #!/usr/bin/env bash
           set -Eeuo pipefail
 
-          mv \
-            output/linux_amd64/utk.bin \
-            "output/utk_${{ steps.meta.outputs.version }}_amd64.bin"
+          mv output/linux_amd64/utk.bin "output/utk_amd64.bin"
+          mv output/linux_arm64/utk.bin "output/utk_arm64.bin"
 
-          mv \
-            output/linux_arm64/utk.bin \
-            "output/utk_${{ steps.meta.outputs.version }}_arm64.bin"
-
-          rm -rf \
-            output/linux_amd64 \
-            output/linux_arm64
-
+          rm -rf output/linux_amd64 output/linux_arm64
       -
         name: Create a release
         if: env.exists == 'false'
