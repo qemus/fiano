@@ -26,14 +26,6 @@ jobs:
           token: ${{ secrets.REPO_ACCESS_TOKEN }}
 
       -
-        name: Increment module version
-        uses: action-pack/increment@v2
-        id: increment
-        with:
-          name: MODULE
-          token: ${{ secrets.REPO_ACCESS_TOKEN }}
-
-      -
         name: Create module tag
         env:
           MODULE: ${{ steps.increment.outputs.value }}
@@ -75,3 +67,11 @@ jobs:
           git push origin "refs/tags/${tag}"
 
           echo "Created module tag ${tag} for ${GITHUB_SHA}."
+
+      -
+        name: Increment module version
+        uses: action-pack/increment@v2
+        id: increment
+        with:
+          name: MODULE
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
