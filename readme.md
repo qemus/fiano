@@ -18,6 +18,7 @@ A maintained fork of [Fiano](https://github.com/linuxboot/fiano) with some addit
 - Supports inspecting firmware contents in table or JSON format
 - Supports extracting and rebuilding firmware images
 - Supports inserting, removing, dumping, and replacing EFI files
+- Preserves unchanged firmware components byte-for-byte
 - Supports configurable LZMA compression levels
 
 ## UTK: Generic UEFI tool kit meant to handle ROM images
