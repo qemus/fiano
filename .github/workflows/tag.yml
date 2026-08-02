@@ -28,7 +28,7 @@ jobs:
       -
         name: Create module tag
         env:
-          MODULE: ${{ steps.increment.outputs.value }}
+          MODULE: ${{ vars.MODULE }}
         run: |
           #!/usr/bin/env bash
           set -Eeuo pipefail
