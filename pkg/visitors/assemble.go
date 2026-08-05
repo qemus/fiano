@@ -25,7 +25,7 @@ type Assemble struct {
 	// TODO: figure out if, in the case where the FVs are triply nested, must the FVs further up
 	// also use the FFSV3 GUID? In that case we should fix this since only the innermost
 	// enclosing FV changes to FFSV3
-	useFFS3 bool
+	useFFS3  bool
 	prepared bool
 }
 
@@ -169,7 +169,7 @@ func (v *Assemble) Visit(f uefi.Firmware) error {
 		}
 
 		for _, file := range f.Files {
-            if file.Header.Type == uefi.FVFileTypePad {
+			if file.Header.Type == uefi.FVFileTypePad {
 				continue
 			}
 			fileBuf := file.Buf()
@@ -543,7 +543,6 @@ func (v *Assemble) Visit(f uefi.Firmware) error {
 			}
 			if nr != 0 && int(r.Type()) > nr {
 				// Region exceeds original number of regions.
-				// TODO: handle this in some way by increasing the number of regions.
 				continue
 			}
 			if int(r.Type()) >= len(f.IFD.Region.FlashRegions) {
