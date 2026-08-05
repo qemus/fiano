@@ -1,6 +1,7 @@
 name: Tag module
 
 on:
+  workflow_call: 
   push:
     branches:
       - module
