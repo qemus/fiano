@@ -169,6 +169,9 @@ func (v *Assemble) Visit(f uefi.Firmware) error {
 		}
 
 		for _, file := range f.Files {
+            if file.Header.Type == uefi.FVFileTypePad {
+				continue
+			}
 			fileBuf := file.Buf()
 			fileLen := uint64(len(fileBuf))
 			if fileLen == 0 {
