@@ -17,7 +17,7 @@ import (
 
 var (
 	xzPath    = flag.String("xzPath", "xz", "Path to system xz command used for lzma encoding. If unset, an internal lzma implementation is used.")
-	lzmaLevel = flag.Int("lzma-level", 1, "LZMA compression level used when rebuilding firmware sections (0-9).")
+	lzmaLevel = flag.Int("lzma-level", 7, "LZMA compression level used when rebuilding firmware sections (0-9).")
 )
 
 // Compressor defines a single compression scheme (such as LZMA).
