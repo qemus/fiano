@@ -413,7 +413,7 @@ index 59530f067b42ca1f43e1fbc53161f911a2ac109f..83376ed82aaa1f521f0048398b399d85
  	// Assemble the tree just to make sure things are right
  	// It will do the mandatory second Assemble of NVar and update the Offsets
 diff --git a/pkg/visitors/parsedir.go b/pkg/visitors/parsedir.go
-index 0c0c58c9318b99022f3759729e99c76d46485a37..718eb380c7c45895187a5d56d1ff8adc086f87ab 100644
+index 0c0c58c9318b99022f3759729e99c76d46485a37..e3d938e2584f1c63d1f22e7853bb72bc171384b5 100644
 --- a/pkg/visitors/parsedir.go
 +++ b/pkg/visitors/parsedir.go
 @@ -5,6 +5,7 @@
@@ -424,7 +424,25 @@ index 0c0c58c9318b99022f3759729e99c76d46485a37..718eb380c7c45895187a5d56d1ff8adc
  	"errors"
  	"os"
  	"path/filepath"
-@@ -51,16 +52,41 @@ func (v *ParseDir) readBuf(ExtractPath string) ([]byte, error) {
+@@ -47,20 +48,59 @@ func (v *ParseDir) readBuf(ExtractPath string) ([]byte, error) {
+ 	return nil, nil
+ }
+ 
++func validFileChecksums(f *uefi.File) bool {
++	buf := f.Buf()
++	if uint64(len(buf)) < f.HeaderLen() || uint64(len(buf)) < f.DataOffset {
++		return false
++	}
++	if f.ChecksumHeader() != 0 {
++		return false
++	}
++	if f.Header.Attributes.HasChecksum() {
++		return f.Header.Checksum.File+uefi.Checksum8(buf[f.DataOffset:]) == 0
++	}
++	return f.Header.Checksum.File == uefi.EmptyBodyChecksum
++}
++
+ // Visit applies the ParseDir visitor to any Firmware type.
  func (v *ParseDir) Visit(f uefi.Firmware) error {
  	var err error
  	var fBuf []byte
@@ -447,7 +465,7 @@ index 0c0c58c9318b99022f3759729e99c76d46485a37..718eb380c7c45895187a5d56d1ff8adc
  
  	case *uefi.File:
  		fBuf, err = v.readBuf(f.ExtractPath)
-+		if err == nil && f.Parsed &&
++		if err == nil && f.Parsed && validFileChecksums(f) &&
 +			(f.ExtractPath == "" || bytes.Equal(f.Buf(), fBuf)) {
 +			setBuf = false
 +		}
@@ -466,7 +484,7 @@ index 0c0c58c9318b99022f3759729e99c76d46485a37..718eb380c7c45895187a5d56d1ff8adc
  
  	case *uefi.NVar:
  		if f.IsValid() {
-@@ -90,7 +116,9 @@ func (v *ParseDir) Visit(f uefi.Firmware) error {
+@@ -90,7 +130,9 @@ func (v *ParseDir) Visit(f uefi.Firmware) error {
  	if err != nil {
  		return err
  	}
