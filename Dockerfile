@@ -6,7 +6,7 @@ ARG MODULE_COMMIT
 ARG TARGETOS TARGETARCH
 
 RUN set -eu && \
-    apk --no-cache add git && \
+    apk --no-cache add git xz && \
     git clone \
       --branch module \
       --single-branch \
