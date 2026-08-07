@@ -5,6 +5,7 @@
 package compression
 
 import (
+	"flag"
 	"os"
 	"reflect"
 	"testing"
@@ -48,6 +49,21 @@ var tests = []struct {
 		decodedFilename: "testdata/random.bin",
 		compressor:      &LZMAX86{&SystemLZMA{"xz"}},
 	},
+}
+
+func TestDefaultLZMALevel(t *testing.T) {
+	option := flag.Lookup("lzma-level")
+	if option == nil {
+		t.Fatal("lzma-level flag is not registered")
+	}
+
+	if option.DefValue != "7" {
+		t.Fatalf(
+			"lzma-level default = %q, want %q",
+			option.DefValue,
+			"7",
+		)
+	}
 }
 
 func TestEncodeDecode(t *testing.T) {
