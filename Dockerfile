@@ -15,6 +15,10 @@ RUN set -eu && \
     git -C /src checkout --detach "$MODULE_COMMIT" && \
     rm -rf /src/.git /var/cache/apk/*
 
+WORKDIR /src
+
+RUN go test ./...
+
 WORKDIR /src/cmds/utk
 
 RUN CGO_ENABLED=0 \
