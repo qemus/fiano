@@ -6,6 +6,7 @@ package compression
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 
 	"github.com/ulikunitz/xz/lzma"
@@ -13,7 +14,6 @@ import (
 
 // Mapping from compression level to dictionary size.
 var lzmaDictCapExps = []uint{18, 20, 21, 22, 22, 23, 23, 24, 25, 26}
-var compressionLevel = 7
 
 // LZMA implements Compressor and uses a Go-based implementation.
 type LZMA struct{}
@@ -34,13 +34,16 @@ func (c *LZMA) Decode(encodedData []byte) ([]byte, error) {
 
 // Encode encodes a byte slice with LZMA.
 func (c *LZMA) Encode(decodedData []byte) ([]byte, error) {
+	if *lzmaLevel < 0 || *lzmaLevel >= len(lzmaDictCapExps) {
+		return nil, fmt.Errorf("invalid LZMA compression level %d: expected 0-9", *lzmaLevel)
+	}
 	// These options are supported by the xz's LZMA command and EDK2's LZMA.
 	wc := lzma.WriterConfig{
 		SizeInHeader: true,
 		Size:         int64(len(decodedData)),
 		EOSMarker:    false,
 		Properties:   &lzma.Properties{LC: 3, LP: 0, PB: 2},
-		DictCap:      1 << lzmaDictCapExps[compressionLevel],
+		DictCap:      1 << lzmaDictCapExps[*lzmaLevel],
 	}
 	if err := wc.Verify(); err != nil {
 		return nil, err

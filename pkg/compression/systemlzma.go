@@ -7,6 +7,7 @@ package compression
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"os/exec"
 )
 
@@ -38,7 +39,11 @@ func (c *SystemLZMA) Decode(encodedData []byte) ([]byte, error) {
 
 // Encode encodes a byte slice with LZMA.
 func (c *SystemLZMA) Encode(decodedData []byte) ([]byte, error) {
-	cmd := exec.Command(c.xzPath, "--format=lzma", "-7", "--stdout")
+	if *lzmaLevel < 0 || *lzmaLevel > 9 {
+		return nil, fmt.Errorf("invalid LZMA compression level %d: expected 0-9", *lzmaLevel)
+	}
+
+	cmd := exec.Command(c.xzPath, "--format=lzma", fmt.Sprintf("-%d", *lzmaLevel), "--stdout")
 	cmd.Stdin = bytes.NewBuffer(decodedData)
 	encodedData, err := cmd.Output()
 	if err != nil {
