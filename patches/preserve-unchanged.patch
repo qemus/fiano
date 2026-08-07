@@ -412,6 +412,71 @@ index 59530f067b42ca1f43e1fbc53161f911a2ac109f..83376ed82aaa1f521f0048398b399d85
  
  	// Assemble the tree just to make sure things are right
  	// It will do the mandatory second Assemble of NVar and update the Offsets
+diff --git a/pkg/visitors/parsedir.go b/pkg/visitors/parsedir.go
+index 0c0c58c9318b99022f3759729e99c76d46485a37..718eb380c7c45895187a5d56d1ff8adc086f87ab 100644
+--- a/pkg/visitors/parsedir.go
++++ b/pkg/visitors/parsedir.go
+@@ -5,6 +5,7 @@
+ package visitors
+ 
+ import (
++	"bytes"
+ 	"errors"
+ 	"os"
+ 	"path/filepath"
+@@ -51,16 +52,41 @@ func (v *ParseDir) readBuf(ExtractPath string) ([]byte, error) {
+ func (v *ParseDir) Visit(f uefi.Firmware) error {
+ 	var err error
+ 	var fBuf []byte
++	setBuf := true
+ 	switch f := f.(type) {
+ 
+ 	case *uefi.FirmwareVolume:
+ 		fBuf, err = v.readBuf(f.ExtractPath)
++		if err == nil && f.Parsed {
++			if f.ExtractPath == "" {
++				setBuf = false
++			} else if len(f.Files) > 0 &&
++				uint64(len(f.Buf())) >= f.DataOffset &&
++				bytes.Equal(f.Buf()[:f.DataOffset], fBuf) {
++				setBuf = false
++			} else if len(f.Files) == 0 && bytes.Equal(f.Buf(), fBuf) {
++				setBuf = false
++			}
++		}
+ 
+ 	case *uefi.File:
+ 		fBuf, err = v.readBuf(f.ExtractPath)
++		if err == nil && f.Parsed &&
++			(f.ExtractPath == "" || bytes.Equal(f.Buf(), fBuf)) {
++			setBuf = false
++		}
++		if !f.Parsed && f.Header.Type == uefi.FVFileTypePad {
++			// Preserve pad files reconstructed from an extracted directory.
++			// Their raw buffer still contains the original pad-file header.
++			f.Header.Type = uefi.FVFileTypeRaw
++		}
+ 
+ 	case *uefi.Section:
+ 		fBuf, err = v.readBuf(f.ExtractPath)
++		if err == nil && f.Parsed &&
++			(f.ExtractPath == "" || bytes.Equal(f.Buf(), fBuf)) {
++			setBuf = false
++		}
+ 
+ 	case *uefi.NVar:
+ 		if f.IsValid() {
+@@ -90,7 +116,9 @@ func (v *ParseDir) Visit(f uefi.Firmware) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	f.SetBuf(fBuf)
++	if setBuf {
++		f.SetBuf(fBuf)
++	}
+ 
+ 	return f.ApplyChildren(v)
+ }
 diff --git a/pkg/visitors/preserve_test.go b/pkg/visitors/preserve_test.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..cafae71282042989e3c351809abfe72d7683b46b
