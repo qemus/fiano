@@ -9,34 +9,47 @@ on:
 
   workflow_dispatch:
     inputs:
+      upstream_commit:
+        description: Exact upstream Fiano commit used as the baseline
+        required: false
+        default: "02de48cf93e8d924131246b1fa744b63b37f9aa6"
+        type: string
+
+      module_commit:
+        description: Exact qemus/fiano module commit to test (leave empty to use the module branch tip)
+        required: false
+        default: ""
+        type: string
+
       runs:
         description: Number of benchmark runs per operation
         required: false
         default: "10"
         type: string
 
-      lzma_level:
-        description: LZMA level used for the primary comparison
-        required: false
-        default: "1"
-        type: choice
-        options:
-          - "0"
-          - "1"
-          - "2"
-          - "3"
-          - "4"
-          - "5"
-          - "6"
-          - "7"
-          - "8"
-          - "9"
-
-      compression_matrix:
-        description: Test system and internal LZMA at levels 0 through 9
+      boot_test:
+        description: Run a QEMU TCG boot smoke test
         required: false
         default: true
         type: boolean
+
+  workflow_call:
+    inputs:
+      upstream_commit:
+        description: Exact upstream Fiano commit used as the baseline
+        required: true
+        type: string
+
+      module_commit:
+        description: Exact qemus/fiano module commit to test
+        required: true
+        type: string
+
+      runs:
+        description: Number of benchmark runs per operation
+        required: false
+        default: "10"
+        type: string
 
       boot_test:
         description: Run a QEMU TCG boot smoke test
@@ -48,7 +61,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: fiano-rom-comparison-${{ github.ref }}
+  group: fiano-rom-comparison-${{ github.ref }}-${{ inputs.module_commit || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -59,12 +72,13 @@ jobs:
 
     env:
       FIANO_VERSION: "1.2.0"
+      FIANO_COMMIT: "02de48cf93e8d924131246b1fa744b63b37f9aa6"
       GO_VERSION: "1.25.7"
       RESULTS: ${{ github.workspace }}/results
       RUNS: ${{ inputs.runs || '10' }}
-      LZMA_LEVEL: ${{ inputs.lzma_level || '1' }}
-      RUN_MATRIX: ${{ github.event_name != 'workflow_dispatch' || inputs.compression_matrix }}
-      RUN_BOOT_TEST: ${{ github.event_name != 'workflow_dispatch' || inputs.boot_test }}
+      RUN_BOOT_TEST: ${{ github.event_name == 'push' || inputs.boot_test }}
+      UPSTREAM_COMMIT_INPUT: ${{ inputs.upstream_commit || '' }}
+      MODULE_COMMIT_INPUT: ${{ inputs.module_commit || '' }}
 
     steps:
       - name: Checkout project
@@ -122,11 +136,6 @@ jobs:
             exit 1
           fi
 
-          if [[ ! "$LZMA_LEVEL" =~ ^[0-9]$ ]]; then
-            echo "LZMA_LEVEL must be from 0 through 9." >&2
-            exit 1
-          fi
-
           if [[ ! -s Dockerfile ]]; then
             echo "Required project file is missing or empty: Dockerfile" >&2
             exit 1
@@ -144,137 +153,143 @@ jobs:
             'MODULE_COMMIT' \
             Dockerfile
 
+          upstream_commit="$UPSTREAM_COMMIT_INPUT"
+          module_commit="$MODULE_COMMIT_INPUT"
+
+          if [[ -z "$upstream_commit" ]]; then
+            upstream_commit="$FIANO_COMMIT"
+          fi
+
+          if [[ -z "$module_commit" ]]; then
+            module_commit="$(
+              git ls-remote \
+                https://github.com/qemus/fiano.git \
+                refs/heads/module \
+                | awk 'NR == 1 { print $1 }'
+            )"
+          fi
+
+          if [[ ! "$upstream_commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "UPSTREAM_COMMIT must be a full 40-character commit SHA." >&2
+            exit 1
+          fi
+
+          if [[ ! "$module_commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "MODULE_COMMIT must be a full 40-character commit SHA." >&2
+            exit 1
+          fi
+
+          if [[ "$upstream_commit" != "$FIANO_COMMIT" ]]; then
+            echo "Expected upstream Fiano v${FIANO_VERSION} commit ${FIANO_COMMIT}, got ${upstream_commit}." >&2
+            exit 1
+          fi
+
+          {
+            echo "UPSTREAM_COMMIT=$upstream_commit"
+            echo "MODULE_COMMIT=$module_commit"
+          } >> "$GITHUB_ENV"
+
           {
             echo "go_version=$GO_VERSION"
             echo "fiano_version=$FIANO_VERSION"
+            echo "upstream_commit=$upstream_commit"
+            echo "module_commit=$module_commit"
             echo "runs=$RUNS"
-            echo "lzma_level=$LZMA_LEVEL"
-            echo "compression_matrix=$RUN_MATRIX"
             echo "boot_test=$RUN_BOOT_TEST"
           } > "$RESULTS/configuration.txt"
 
-      - name: Create both Fiano source variants
+      - name: Checkout exact Fiano source revisions
         run: |
           set -Eeuo pipefail
 
-          UPSTREAM_SOURCE="$RUNNER_TEMP/fiano-upstream"
-          MODULE_SOURCE="$RUNNER_TEMP/fiano-module"
-          BASELINE_SOURCE="$RUNNER_TEMP/fiano-lzma-only"
-          CANDIDATE_SOURCE="$RUNNER_TEMP/fiano-lzma-preserve"
+          BASELINE_SOURCE="$RUNNER_TEMP/fiano-upstream"
+          CANDIDATE_SOURCE="$RUNNER_TEMP/fiano-module"
 
           rm -rf \
-            "$UPSTREAM_SOURCE" \
-            "$MODULE_SOURCE" \
             "$BASELINE_SOURCE" \
             "$CANDIDATE_SOURCE"
 
-          git clone \
-            --branch "v$FIANO_VERSION" \
+          git init -q "$BASELINE_SOURCE"
+          git -C "$BASELINE_SOURCE" remote add origin https://github.com/linuxboot/fiano.git
+          git -C "$BASELINE_SOURCE" fetch \
             --depth 1 \
-            https://github.com/linuxboot/fiano.git \
-            "$UPSTREAM_SOURCE"
+            origin \
+            "$UPSTREAM_COMMIT"
+          git -C "$BASELINE_SOURCE" checkout -q --detach FETCH_HEAD
 
-          git clone \
-            --branch module \
-            --depth 1 \
-            https://github.com/qemus/fiano.git \
-            "$MODULE_SOURCE"
+          git init -q "$CANDIDATE_SOURCE"
+          git -C "$CANDIDATE_SOURCE" remote add origin https://github.com/qemus/fiano.git
+          git -C "$CANDIDATE_SOURCE" fetch \
+            --depth 50 \
+            origin \
+            "$MODULE_COMMIT"
+          git -C "$CANDIDATE_SOURCE" checkout -q --detach FETCH_HEAD
 
-          git clone \
-            --local \
-            --no-hardlinks \
-            "$UPSTREAM_SOURCE" \
-            "$BASELINE_SOURCE"
+          actual_upstream="$(git -C "$BASELINE_SOURCE" rev-parse HEAD)"
+          actual_module="$(git -C "$CANDIDATE_SOURCE" rev-parse HEAD)"
 
-          git clone \
-            --local \
-            --no-hardlinks \
-            "$UPSTREAM_SOURCE" \
-            "$CANDIDATE_SOURCE"
+          if [[ "$actual_upstream" != "$UPSTREAM_COMMIT" ]]; then
+            echo "Fetched upstream commit ${actual_upstream}, expected ${UPSTREAM_COMMIT}." >&2
+            exit 1
+          fi
 
-          for file in \
-            pkg/compression/compression.go \
-            pkg/compression/lzma.go \
-            pkg/compression/systemlzma.go; do
-
-            if [[ ! -s "$MODULE_SOURCE/$file" ]]; then
-              echo "Required module source file is missing or empty: $file" >&2
-              exit 1
-            fi
-
-            cp \
-              "$MODULE_SOURCE/$file" \
-              "$BASELINE_SOURCE/$file"
-          done
-
-          find "$CANDIDATE_SOURCE" \
-            -mindepth 1 \
-            -maxdepth 1 \
-            ! -name .git \
-            -exec rm -rf {} +
-
-          cp -a \
-            "$MODULE_SOURCE/." \
-            "$CANDIDATE_SOURCE/"
-
-          rm -rf "$CANDIDATE_SOURCE/.git"
-
-          cp -a \
-            "$UPSTREAM_SOURCE/.git" \
-            "$CANDIDATE_SOURCE/.git"
-
-          grep -Fq \
-            'lzma-level' \
-            "$BASELINE_SOURCE/pkg/compression/compression.go"
+          if [[ "$actual_module" != "$MODULE_COMMIT" ]]; then
+            echo "Fetched module commit ${actual_module}, expected ${MODULE_COMMIT}." >&2
+            exit 1
+          fi
 
           if grep -R -Fq \
             'propagateModified' \
             "$BASELINE_SOURCE/pkg"; then
 
-            echo "The preservation changes are present in the baseline source." >&2
+            echo "The preservation changes are present in the pristine upstream baseline." >&2
             exit 1
           fi
-
-          grep -Fq \
-            'lzma-level' \
-            "$CANDIDATE_SOURCE/pkg/compression/compression.go"
 
           grep -Fq \
             'propagateModified' \
             "$CANDIDATE_SOURCE/pkg/visitors/assemble.go"
 
-          git -C "$BASELINE_SOURCE" diff \
-            > "$RESULTS/source/lzma-only.diff"
+          if ! git -C "$CANDIDATE_SOURCE" cat-file -e "${UPSTREAM_COMMIT}^{commit}" 2>/dev/null; then
+            echo "The module history does not contain upstream commit ${UPSTREAM_COMMIT}." >&2
+            exit 1
+          fi
+
+          if ! git -C "$CANDIDATE_SOURCE" merge-base --is-ancestor \
+            "$UPSTREAM_COMMIT" \
+            "$MODULE_COMMIT"; then
+
+            echo "Module commit ${MODULE_COMMIT} is not based on upstream ${UPSTREAM_COMMIT}." >&2
+            exit 1
+          fi
 
           git -C "$CANDIDATE_SOURCE" diff \
-            > "$RESULTS/source/lzma-preserve.diff"
+            "$UPSTREAM_COMMIT..$MODULE_COMMIT" \
+            > "$RESULTS/source/module.diff"
 
           git -C "$BASELINE_SOURCE" diff --check
           git -C "$CANDIDATE_SOURCE" diff --check
 
           {
             echo "## Upstream commit"
-            git -C "$UPSTREAM_SOURCE" rev-parse HEAD
+            echo "$actual_upstream"
 
             echo
             echo "## Module commit"
-            git -C "$MODULE_SOURCE" rev-parse HEAD
+            echo "$actual_module"
 
             echo
-            echo "## Baseline changes"
-            git -C "$BASELINE_SOURCE" diff --stat
-
-            echo
-            echo "## Candidate changes"
-            git -C "$CANDIDATE_SOURCE" diff --stat
+            echo "## Module changes from upstream"
+            git -C "$CANDIDATE_SOURCE" diff \
+              --stat \
+              "$UPSTREAM_COMMIT..$MODULE_COMMIT"
           } | tee "$RESULTS/source/source-state.txt"
 
           {
-            echo "UPSTREAM_SOURCE=$UPSTREAM_SOURCE"
             echo "BASELINE_SOURCE=$BASELINE_SOURCE"
             echo "CANDIDATE_SOURCE=$CANDIDATE_SOURCE"
-            echo "BASELINE_BIN=$RESULTS/bin/utk-lzma-only"
-            echo "CANDIDATE_BIN=$RESULTS/bin/utk-lzma-preserve"
+            echo "BASELINE_BIN=$RESULTS/bin/utk-upstream"
+            echo "CANDIDATE_BIN=$RESULTS/bin/utk-module"
             echo "VERIFY_FFS_BIN=$RESULTS/bin/verify-ffs"
           } >> "$GITHUB_ENV"
 
@@ -1579,29 +1594,27 @@ jobs:
 
             go test \
               -count=1 \
-              ./pkg/compression \
               ./pkg/visitors
           ) 2>&1 | tee \
-            "$RESULTS/build/lzma-only-tests.log"
+            "$RESULTS/build/upstream-tests.log"
 
           (
             cd "$CANDIDATE_SOURCE"
 
             go test \
               -count=1 \
-              -coverprofile="$RESULTS/build/lzma-preserve.coverage" \
-              ./pkg/compression \
+              -coverprofile="$RESULTS/build/module.coverage" \
               ./pkg/visitors
           ) 2>&1 | tee \
-            "$RESULTS/build/lzma-preserve-tests.log"
+            "$RESULTS/build/module-tests.log"
 
           (
             cd "$CANDIDATE_SOURCE"
 
             go tool cover \
-              -func="$RESULTS/build/lzma-preserve.coverage"
+              -func="$RESULTS/build/module.coverage"
           ) | tee \
-            "$RESULTS/build/lzma-preserve-coverage.txt"
+            "$RESULTS/build/module-coverage.txt"
 
       - name: Build UTK variants and exact FFS verifier
         run: |
@@ -1636,12 +1649,12 @@ jobs:
             | tee "$RESULTS/build/go-version.txt"
 
           build_variant \
-            "lzma-only" \
+            "upstream" \
             "$BASELINE_SOURCE" \
             "$BASELINE_BIN"
 
           build_variant \
-            "lzma-preserve" \
+            "module" \
             "$CANDIDATE_SOURCE" \
             "$CANDIDATE_BIN"
 
@@ -1890,20 +1903,18 @@ jobs:
 
           mkdir -p "$OUTPUT_DIR"
 
-          BASELINE_NOOP="$OUTPUT_DIR/lzma-only-noop.fd"
-          CANDIDATE_NOOP="$OUTPUT_DIR/lzma-preserve-noop.fd"
-          BASELINE_REPLACE="$OUTPUT_DIR/lzma-only-replace.fd"
-          CANDIDATE_REPLACE="$OUTPUT_DIR/lzma-preserve-replace.fd"
-          CANDIDATE_RESAVE="$OUTPUT_DIR/lzma-preserve-resave.fd"
+          BASELINE_NOOP="$OUTPUT_DIR/upstream-noop.fd"
+          CANDIDATE_NOOP="$OUTPUT_DIR/module-noop.fd"
+          BASELINE_REPLACE="$OUTPUT_DIR/upstream-replace.fd"
+          CANDIDATE_REPLACE="$OUTPUT_DIR/module-replace.fd"
+          CANDIDATE_RESAVE="$OUTPUT_DIR/module-resave.fd"
 
           "$BASELINE_BIN" \
-            -lzma-level="$LZMA_LEVEL" \
             "$ROM" \
             save \
             "$BASELINE_NOOP"
 
           "$CANDIDATE_BIN" \
-            -lzma-level="$LZMA_LEVEL" \
             "$ROM" \
             save \
             "$CANDIDATE_NOOP"
@@ -1913,7 +1924,6 @@ jobs:
             "$CANDIDATE_NOOP"
 
           "$BASELINE_BIN" \
-            -lzma-level="$LZMA_LEVEL" \
             "$ROM" \
             replace_ffs \
             LogoDXE \
@@ -1922,7 +1932,6 @@ jobs:
             "$BASELINE_REPLACE"
 
           "$CANDIDATE_BIN" \
-            -lzma-level="$LZMA_LEVEL" \
             "$ROM" \
             replace_ffs \
             LogoDXE \
@@ -1969,11 +1978,11 @@ jobs:
 
           {
             echo "original=$(sha256sum "$ROM")"
-            echo "lzma_only_noop=$(sha256sum "$BASELINE_NOOP")"
-            echo "preserve_noop=$(sha256sum "$CANDIDATE_NOOP")"
-            echo "lzma_only_replace=$(sha256sum "$BASELINE_REPLACE")"
-            echo "preserve_replace=$(sha256sum "$CANDIDATE_REPLACE")"
-            echo "preserve_resave=$(sha256sum "$CANDIDATE_RESAVE")"
+            echo "upstream_noop=$(sha256sum "$BASELINE_NOOP")"
+            echo "module_noop=$(sha256sum "$CANDIDATE_NOOP")"
+            echo "upstream_replace=$(sha256sum "$BASELINE_REPLACE")"
+            echo "module_replace=$(sha256sum "$CANDIDATE_REPLACE")"
+            echo "module_resave=$(sha256sum "$CANDIDATE_RESAVE")"
           } | tee "$RESULTS/primary-comparison.txt"
 
           {
@@ -1998,7 +2007,6 @@ jobs:
               local output="$OUTPUT_DIR/${name}-${run}.fd"
 
               "$binary" \
-                -lzma-level="$LZMA_LEVEL" \
                 "$ROM" \
                 replace_ffs \
                 LogoDXE \
@@ -2021,88 +2029,16 @@ jobs:
           }
 
           check_variant \
-            "lzma-only" \
+            "upstream" \
             "$BASELINE_BIN"
 
           check_variant \
-            "lzma-preserve" \
+            "module" \
             "$CANDIDATE_BIN"
 
           sha256sum \
             "$OUTPUT_DIR"/*.fd \
             | tee "$RESULTS/determinism.txt"
-
-      - name: Run compression matrix
-        if: env.RUN_MATRIX == 'true'
-        run: |
-          set -Eeuo pipefail
-
-          OUTPUT_DIR="$RESULTS/outputs/compression-matrix"
-
-          mkdir -p "$OUTPUT_DIR"
-
-          {
-            echo "backend,level,sha256"
-          } > "$RESULTS/compression-matrix.csv"
-
-          for backend in system internal; do
-            for level in {0..9}; do
-              args=(
-                "-lzma-level=$level"
-              )
-
-              if [[ "$backend" == "internal" ]]; then
-                args+=("-xzPath=")
-              fi
-
-              baseline="$OUTPUT_DIR/lzma-only-${backend}-${level}.fd"
-              candidate="$OUTPUT_DIR/lzma-preserve-${backend}-${level}.fd"
-
-              "$BASELINE_BIN" \
-                "${args[@]}" \
-                "$ROM" \
-                replace_ffs \
-                LogoDXE \
-                "$QEMU_FFS" \
-                save \
-                "$baseline"
-
-              "$CANDIDATE_BIN" \
-                "${args[@]}" \
-                "$ROM" \
-                replace_ffs \
-                LogoDXE \
-                "$QEMU_FFS" \
-                save \
-                "$candidate"
-
-              "$BASELINE_BIN" \
-                "$baseline" \
-                validate
-
-              "$CANDIDATE_BIN" \
-                "$candidate" \
-                validate
-
-              cmp \
-                "$baseline" \
-                "$candidate"
-
-              "$VERIFY_FFS_BIN" \
-                "$QEMU_FFS" \
-                "$baseline"
-
-              "$VERIFY_FFS_BIN" \
-                "$QEMU_FFS" \
-                "$candidate"
-
-              printf '%s,%s,%s\n' \
-                "$backend" \
-                "$level" \
-                "$(sha256sum "$candidate" | awk '{print $1}')" \
-                >> "$RESULTS/compression-matrix.csv"
-            done
-          done
 
       - name: Run OVMF regression matrix
         run: |
@@ -2125,11 +2061,10 @@ jobs:
             slug="${name//[^A-Za-z0-9_.-]/-}"
 
             candidate_noop="$OUTPUT_DIR/${slug}-noop.fd"
-            baseline_replace="$OUTPUT_DIR/${slug}-baseline.fd"
-            candidate_replace="$OUTPUT_DIR/${slug}-candidate.fd"
+            baseline_replace="$OUTPUT_DIR/${slug}-upstream.fd"
+            candidate_replace="$OUTPUT_DIR/${slug}-module.fd"
 
             "$CANDIDATE_BIN" \
-              -lzma-level="$LZMA_LEVEL" \
               "$test_rom" \
               save \
               "$candidate_noop"
@@ -2139,7 +2074,6 @@ jobs:
               "$candidate_noop"
 
             "$BASELINE_BIN" \
-              -lzma-level="$LZMA_LEVEL" \
               "$test_rom" \
               replace_ffs \
               LogoDXE \
@@ -2148,7 +2082,6 @@ jobs:
               "$baseline_replace"
 
             "$CANDIDATE_BIN" \
-              -lzma-level="$LZMA_LEVEL" \
               "$test_rom" \
               replace_ffs \
               LogoDXE \
@@ -2219,7 +2152,6 @@ jobs:
               if [[ "$operation" == "noop" ]]; then
                 command=(
                   "$binary"
-                  "-lzma-level=$LZMA_LEVEL"
                   "$ROM"
                   save
                   "$output"
@@ -2227,7 +2159,6 @@ jobs:
               else
                 command=(
                   "$binary"
-                  "-lzma-level=$LZMA_LEVEL"
                   "$ROM"
                   replace_ffs
                   LogoDXE
@@ -2274,22 +2205,22 @@ jobs:
             echo "variant,operation,runs,mean_seconds"
 
             benchmark \
-              "lzma-only" \
+              "upstream" \
               "$BASELINE_BIN" \
               "noop"
 
             benchmark \
-              "lzma-preserve" \
+              "module" \
               "$CANDIDATE_BIN" \
               "noop"
 
             benchmark \
-              "lzma-only" \
+              "upstream" \
               "$BASELINE_BIN" \
               "replace"
 
             benchmark \
-              "lzma-preserve" \
+              "module" \
               "$CANDIDATE_BIN" \
               "replace"
           } | tee "$RESULTS/benchmark.csv"
@@ -2342,11 +2273,11 @@ jobs:
           }
 
           boot_test \
-            "lzma-only" \
+            "upstream" \
             "$BASELINE_REPLACE"
 
           boot_test \
-            "lzma-preserve" \
+            "module" \
             "$CANDIDATE_REPLACE"
 
       - name: Publish workflow summary
@@ -2385,14 +2316,6 @@ jobs:
               echo
             fi
 
-            if [[ -s "$RESULTS/compression-matrix.csv" ]]; then
-              echo "## Compression matrix"
-              echo
-              echo '```csv'
-              cat "$RESULTS/compression-matrix.csv"
-              echo '```'
-              echo
-            fi
 
             if [[ -s "$RESULTS/ovmf-regression.csv" ]]; then
               echo "## OVMF regression matrix"
