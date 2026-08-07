@@ -8,8 +8,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build
+  prepare:
+    name: Prepare module
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -19,9 +19,17 @@ jobs:
       FIANO_VERSION: "1.2.0"
       FIANO_COMMIT: "02de48cf93e8d924131246b1fa744b63b37f9aa6"
 
+    outputs:
+      exists: ${{ steps.checkTag.outputs.exists }}
+      version: ${{ steps.version.outputs.version }}
+      module_tag: ${{ steps.version.outputs.module_tag }}
+      upstream_commit: ${{ steps.module.outputs.upstream_commit }}
+      module_commit: ${{ steps.module.outputs.commit }}
+
     steps:
       -
         name: Set version
+        id: version
         run: |
           #!/usr/bin/env bash
           set -Eeuo pipefail
@@ -40,8 +48,8 @@ jobs:
             exit 1
           fi
 
-          echo "version=$version" >> "$GITHUB_ENV"
-          echo "module_tag=v${version}-${{ vars.MODULE }}" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "module_tag=v${version}-${{ vars.MODULE }}" >> "$GITHUB_OUTPUT"
           echo "Building version: $version"
 
       -
@@ -49,19 +57,11 @@ jobs:
         uses: action-pack/tag-exists@v1
         id: checkTag
         with:
-          tag: '${{ env.version }}'
-
-      -
-        name: Finish when found
-        run: |
-          #!/usr/bin/env bash
-          set -Eeuo pipefail
-
-          echo "exists=${{ steps.checkTag.outputs.exists }}" >> "$GITHUB_ENV"
+          tag: '${{ steps.version.outputs.version }}'
 
       -
         name: Checkout
-        if: env.exists == 'false'
+        if: steps.checkTag.outputs.exists == 'false'
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -69,7 +69,9 @@ jobs:
 
       -
         name: Check module tag
-        if: env.exists == 'false'
+        if: steps.checkTag.outputs.exists == 'false'
+        env:
+          MODULE_TAG: ${{ steps.version.outputs.module_tag }}
         run: |
           #!/usr/bin/env bash
           set -Eeuo pipefail
@@ -78,15 +80,15 @@ jobs:
             --exit-code \
             --tags \
             origin \
-            "refs/tags/${module_tag}" \
+            "refs/tags/${MODULE_TAG}" \
             >/dev/null 2>&1; then
-            echo "ERROR: Tag ${module_tag} already exists." >&2
+            echo "ERROR: Tag ${MODULE_TAG} already exists." >&2
             exit 1
           fi
 
       -
         name: Set up Go
-        if: env.exists == 'false'
+        if: steps.checkTag.outputs.exists == 'false'
         uses: actions/setup-go@v7
         with:
           go-version: "1.25.7"
@@ -94,7 +96,7 @@ jobs:
 
       -
         name: Generate module
-        if: env.exists == 'false'
+        if: steps.checkTag.outputs.exists == 'false'
         id: module
         run: |
           #!/usr/bin/env bash
@@ -169,6 +171,7 @@ jobs:
           git branch -f module "$module_commit"
 
           echo "commit=$module_commit" >> "$GITHUB_OUTPUT"
+          echo "upstream_commit=$FIANO_COMMIT" >> "$GITHUB_OUTPUT"
           echo "old_upstream=$old_upstream" >> "$GITHUB_OUTPUT"
           echo "old_module=$old_module" >> "$GITHUB_OUTPUT"
 
@@ -177,7 +180,7 @@ jobs:
 
       -
         name: Test module
-        if: env.exists == 'false'
+        if: steps.checkTag.outputs.exists == 'false'
         working-directory: ${{ runner.temp }}/fiano-module
         run: |
           #!/usr/bin/env bash
@@ -187,7 +190,7 @@ jobs:
 
       -
         name: Publish module branches
-        if: env.exists == 'false'
+        if: steps.checkTag.outputs.exists == 'false'
         env:
           OLD_UPSTREAM: ${{ steps.module.outputs.old_upstream }}
           OLD_MODULE: ${{ steps.module.outputs.old_module }}
@@ -203,10 +206,44 @@ jobs:
             refs/heads/upstream:refs/heads/upstream \
             refs/heads/module:refs/heads/module
 
+  regression:
+    name: Regression test
+    needs: prepare
+    if: needs.prepare.outputs.exists == 'false'
+    uses: ./.github/workflows/test.yml
+    with:
+      upstream_commit: ${{ needs.prepare.outputs.upstream_commit }}
+      module_commit: ${{ needs.prepare.outputs.module_commit }}
+      runs: "10"
+      boot_test: true
+
+  build:
+    name: Build and release
+    needs:
+      - prepare
+      - regression
+    if: needs.prepare.outputs.exists == 'false' && needs.regression.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      packages: write
+      contents: write
+    env:
+      version: ${{ needs.prepare.outputs.version }}
+      module_tag: ${{ needs.prepare.outputs.module_tag }}
+      MODULE_COMMIT: ${{ needs.prepare.outputs.module_commit }}
+
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+
       -
         name: Docker metadata
         id: meta
-        if: env.exists == 'false'
         uses: docker/metadata-action@v6
         with:
           context: git
@@ -222,12 +259,10 @@ jobs:
 
       -
         name: Set up Docker Buildx
-        if: env.exists == 'false'
         uses: docker/setup-buildx-action@v4
 
       -
         name: Build binaries
-        if: env.exists == 'false'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -239,11 +274,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
-            MODULE_COMMIT=${{ steps.module.outputs.commit }}
+            MODULE_COMMIT=${{ env.MODULE_COMMIT }}
 
       -
         name: Rename binaries
-        if: env.exists == 'false'
         run: |
           #!/usr/bin/env bash
           set -Eeuo pipefail
@@ -255,9 +289,6 @@ jobs:
 
       -
         name: Create release tags
-        if: env.exists == 'false'
-        env:
-          MODULE_COMMIT: ${{ steps.module.outputs.commit }}
         run: |
           #!/usr/bin/env bash
           set -Eeuo pipefail
@@ -278,7 +309,6 @@ jobs:
 
       -
         name: Increment module version
-        if: env.exists == 'false'
         uses: action-pack/increment@v2
         with:
           name: MODULE
@@ -286,7 +316,6 @@ jobs:
 
       -
         name: Create a release
-        if: env.exists == 'false'
         uses: action-pack/github-release@v2
         with:
           tag: "${{ env.version }}"
@@ -295,7 +324,6 @@ jobs:
 
       -
         name: Add assets to release
-        if: env.exists == 'false'
         uses: AButler/upload-release-assets@v4.0
         with:
           files: 'output/*'
@@ -312,7 +340,6 @@ jobs:
 
       -
         name: Send mail
-        if: env.exists == 'false'
         uses: action-pack/send-mail@v1
         with:
           to: ${{ secrets.MAILTO }}
