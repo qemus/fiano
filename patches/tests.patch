@@ -36,7 +36,7 @@ diff --git a/pkg/visitors/assemble_test.go b/pkg/visitors/assemble_test.go
 index b234956bf1c051a2484fea1b4cc7d59b304cb499..f8f5a6c56709f4ba8e15d5757f806e13087efb8c 100644
 --- a/pkg/visitors/assemble_test.go
 +++ b/pkg/visitors/assemble_test.go
-@@ -46,3 +46,226 @@ func TestBadDepex(t *testing.T) {
+@@ -46,3 +46,314 @@ func TestBadDepex(t *testing.T) {
  		})
  	}
  }
@@ -185,6 +185,94 @@ index b234956bf1c051a2484fea1b4cc7d59b304cb499..f8f5a6c56709f4ba8e15d5757f806e13
 +			"rebuilt second file size = %#x, want %#x",
 +			rebuilt.Files[1].Header.ExtendedSize,
 +			alignedFileSize,
++		)
++	}
++}
++
++func TestAssemblePreservesCreatedFirmwareVolumePadFile(t *testing.T) {
++	const (
++		firmwareVolumeSize = 0x1000
++		padSize            = 0x100
++		fileSize           = 0x40
++	)
++
++	originalErasePolarity := uefi.Attributes.ErasePolarity
++	uefi.Attributes.ErasePolarity = 0xff
++	t.Cleanup(func() {
++		uefi.Attributes.ErasePolarity = originalErasePolarity
++	})
++
++	fv, err := createEmptyFirmwareVolume(
++		0,
++		firmwareVolumeSize,
++		nil,
++	)
++	if err != nil {
++		t.Fatalf(
++			"createEmptyFirmwareVolume() returned an error: %v",
++			err,
++		)
++	}
++
++	pad, err := uefi.CreatePadFile(padSize)
++	if err != nil {
++		t.Fatalf(
++			"CreatePadFile() returned an error: %v",
++			err,
++		)
++	}
++
++	file := newTestRawFile(
++		t,
++		"33333333-3333-3333-3333-333333333333",
++		fileSize,
++		false,
++	)
++
++	fv.Files = []*uefi.File{
++		pad,
++		file,
++	}
++
++	if err := (&Assemble{}).Run(fv); err != nil {
++		t.Fatalf(
++			"Assemble.Run() returned an error: %v",
++			err,
++		)
++	}
++
++	parsed, err := uefi.NewFirmwareVolume(
++		fv.Buf(),
++		0,
++		false,
++	)
++	if err != nil {
++		t.Fatalf(
++			"parse assembled firmware volume: %v",
++			err,
++		)
++	}
++
++	if len(parsed.Files) != 2 {
++		t.Fatalf(
++			"assembled file count = %d, want 2",
++			len(parsed.Files),
++		)
++	}
++
++	if parsed.Files[0].Header.Type != uefi.FVFileTypePad {
++		t.Fatalf(
++			"first assembled file type = %s, want %s",
++			parsed.Files[0].Header.Type.String(),
++			uefi.FVFileTypePad.String(),
++		)
++	}
++
++	if parsed.Files[0].Header.ExtendedSize != padSize {
++		t.Fatalf(
++			"assembled PAD file size = %#x, want %#x",
++			parsed.Files[0].Header.ExtendedSize,
++			padSize,
 +		)
 +	}
 +}
