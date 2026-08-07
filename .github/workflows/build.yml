@@ -15,6 +15,9 @@ jobs:
       actions: write
       packages: write
       contents: write
+    env:
+      FIANO_VERSION: "1.2.0"
+      FIANO_COMMIT: "02de48cf93e8d924131246b1fa744b63b37f9aa6"
 
     steps:
       -
@@ -32,7 +35,13 @@ jobs:
             exit 1
           fi
 
+          if [[ ! "${{ vars.MODULE }}" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: MODULE repository variable must be a non-negative integer." >&2
+            exit 1
+          fi
+
           echo "version=$version" >> "$GITHUB_ENV"
+          echo "module_tag=v${version}-${{ vars.MODULE }}" >> "$GITHUB_ENV"
           echo "Building version: $version"
 
       -
@@ -56,29 +65,143 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
 
       -
-        name: Resolve module commit
+        name: Check module tag
+        if: env.exists == 'false'
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          if git ls-remote \
+            --exit-code \
+            --tags \
+            origin \
+            "refs/tags/${module_tag}" \
+            >/dev/null 2>&1; then
+            echo "ERROR: Tag ${module_tag} already exists." >&2
+            exit 1
+          fi
+
+      -
+        name: Set up Go
+        if: env.exists == 'false'
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.25.7"
+          cache: false
+
+      -
+        name: Generate module
         if: env.exists == 'false'
         id: module
         run: |
           #!/usr/bin/env bash
           set -Eeuo pipefail
 
-          module_commit=$(
+          module_dir="$RUNNER_TEMP/fiano-module"
+
+          old_upstream=$(
             git ls-remote \
-              "https://github.com/${GITHUB_REPOSITORY}.git" \
+              origin \
+              refs/heads/upstream \
+              | awk 'NR == 1 { print $1 }'
+          )
+
+          old_module=$(
+            git ls-remote \
+              origin \
               refs/heads/module \
               | awk 'NR == 1 { print $1 }'
           )
 
-          if [ -z "$module_commit" ]; then
-            echo "ERROR: The module branch was not found." >&2
+          git remote add fiano https://github.com/linuxboot/fiano.git
+          git fetch \
+            --no-tags \
+            fiano \
+            "refs/tags/v${FIANO_VERSION}:refs/remotes/fiano/v${FIANO_VERSION}"
+
+          fiano_commit="$(git rev-parse "refs/remotes/fiano/v${FIANO_VERSION}^{commit}")"
+
+          if [ "$fiano_commit" != "$FIANO_COMMIT" ]; then
+            echo "ERROR: Fiano v${FIANO_VERSION} resolved to ${fiano_commit}, expected ${FIANO_COMMIT}." >&2
             exit 1
           fi
 
+          rm -rf "$module_dir"
+          git worktree add --detach "$module_dir" "$FIANO_COMMIT"
+
+          git -C "$module_dir" config user.name "github-actions[bot]"
+          git -C "$module_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git -C "$module_dir" apply --check "$GITHUB_WORKSPACE/patches/lzma-level.patch"
+          git -C "$module_dir" apply "$GITHUB_WORKSPACE/patches/lzma-level.patch"
+          git -C "$module_dir" add -A
+          git -C "$module_dir" diff --cached --check
+          git -C "$module_dir" commit -m "feat: Add configurable LZMA compression level"
+
+          git -C "$module_dir" apply --check "$GITHUB_WORKSPACE/patches/preserve-unchanged.patch"
+          git -C "$module_dir" apply "$GITHUB_WORKSPACE/patches/preserve-unchanged.patch"
+          git -C "$module_dir" add -A
+          git -C "$module_dir" diff --cached --check
+          git -C "$module_dir" commit -m "fix: Preserve unchanged firmware and regenerate FV padding"
+
+          git -C "$module_dir" apply --check "$GITHUB_WORKSPACE/patches/tests.patch"
+          git -C "$module_dir" apply "$GITHUB_WORKSPACE/patches/tests.patch"
+          git -C "$module_dir" add -A
+          git -C "$module_dir" diff --cached --check
+          git -C "$module_dir" commit -m "test: Add regression coverage for LZMA and FV padding"
+
+          module_commit="$(git -C "$module_dir" rev-parse HEAD)"
+
+          if [ "$(git -C "$module_dir" rev-list --count "${FIANO_COMMIT}..HEAD")" -ne 3 ]; then
+            echo "ERROR: Generated module does not contain exactly three patch commits." >&2
+            exit 1
+          fi
+
+          if [ -n "$(git -C "$module_dir" status --porcelain)" ]; then
+            echo "ERROR: Generated module worktree is not clean." >&2
+            exit 1
+          fi
+
+          git branch -f upstream "$FIANO_COMMIT"
+          git branch -f module "$module_commit"
+
           echo "commit=$module_commit" >> "$GITHUB_OUTPUT"
-          echo "Using module commit: $module_commit"
+          echo "old_upstream=$old_upstream" >> "$GITHUB_OUTPUT"
+          echo "old_module=$old_module" >> "$GITHUB_OUTPUT"
+
+          echo "Using Fiano commit: $FIANO_COMMIT"
+          echo "Generated module commit: $module_commit"
+
+      -
+        name: Test module
+        if: env.exists == 'false'
+        working-directory: ${{ runner.temp }}/fiano-module
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          go test ./...
+
+      -
+        name: Publish module branches
+        if: env.exists == 'false'
+        env:
+          OLD_UPSTREAM: ${{ steps.module.outputs.old_upstream }}
+          OLD_MODULE: ${{ steps.module.outputs.old_module }}
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          git push \
+            --atomic \
+            --force-with-lease="refs/heads/upstream:${OLD_UPSTREAM}" \
+            --force-with-lease="refs/heads/module:${OLD_MODULE}" \
+            origin \
+            refs/heads/upstream:refs/heads/upstream \
+            refs/heads/module:refs/heads/module
 
       -
         name: Docker metadata
@@ -129,13 +252,45 @@ jobs:
           mv output/linux_arm64/utk.bin "output/utk_arm64.bin"
 
           rm -rf output/linux_amd64 output/linux_arm64
+
+      -
+        name: Create release tags
+        if: env.exists == 'false'
+        env:
+          MODULE_COMMIT: ${{ steps.module.outputs.commit }}
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          master_commit="$(git rev-parse HEAD)"
+
+          git tag "$version" "$master_commit"
+          git tag "$module_tag" "$MODULE_COMMIT"
+
+          git push \
+            --atomic \
+            origin \
+            "refs/tags/${version}" \
+            "refs/tags/${module_tag}"
+
+          echo "Created master tag ${version} for ${master_commit}."
+          echo "Created module tag ${module_tag} for ${MODULE_COMMIT}."
+
+      -
+        name: Increment module version
+        if: env.exists == 'false'
+        uses: action-pack/increment@v2
+        with:
+          name: MODULE
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+
       -
         name: Create a release
         if: env.exists == 'false'
         uses: action-pack/github-release@v2
         with:
-          tag: "${{ steps.meta.outputs.version }}"
-          title: "v${{ steps.meta.outputs.version }}"
+          tag: "${{ env.version }}"
+          title: "v${{ env.version }}"
           token: ${{ secrets.REPO_ACCESS_TOKEN }}
 
       -
@@ -144,7 +299,7 @@ jobs:
         uses: AButler/upload-release-assets@v4.0
         with:
           files: 'output/*'
-          release-tag: "${{ steps.meta.outputs.version }}"
+          release-tag: "${{ env.version }}"
           repo-token: ${{ secrets.REPO_ACCESS_TOKEN }}
 
       -
@@ -163,8 +318,8 @@ jobs:
           to: ${{ secrets.MAILTO }}
           from: Github Actions <${{ secrets.MAILTO }}>
           connection_url: ${{ secrets.MAIL_CONNECTION }}
-          subject: Build of ${{ github.event.repository.name }} v${{ steps.meta.outputs.version }} completed
+          subject: Build of ${{ github.event.repository.name }} v${{ env.version }} completed
           body: |
-            The build job of ${{ github.event.repository.name }} v${{ steps.meta.outputs.version }} was completed successfully!
+            The build job of ${{ github.event.repository.name }} v${{ env.version }} was completed successfully!
 
             See https://github.com/${{ github.repository }}/actions for more information.
