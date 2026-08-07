@@ -17,7 +17,7 @@ RUN set -eu && \
 
 WORKDIR /src
 
-RUN go test ./...
+RUN go test -count=1 ./...
 
 WORKDIR /src/cmds/utk
 
