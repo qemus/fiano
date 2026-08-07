@@ -117,6 +117,8 @@ type NVar struct {
 	ExtractPath string
 	DataOffset  int64
 	ExtOffset   int64 `json:",omitempty"`
+	Parsed      bool  `json:"-"`
+	Modified    bool  `json:"-"`
 }
 
 // String returns the String value of the NVAR: Type and Name if valid
@@ -137,6 +139,7 @@ func (v *NVar) Buf() []byte {
 // Used mostly for things interacting with the Firmware interface.
 func (v *NVar) SetBuf(buf []byte) {
 	v.buf = buf
+	v.Modified = true
 }
 
 // Apply calls the visitor on the NVar.
@@ -164,6 +167,8 @@ type NVarStore struct {
 	FreeSpaceOffset uint64
 	GUIDStoreOffset uint64
 	Length          uint64
+	Parsed          bool `json:"-"`
+	Modified        bool `json:"-"`
 }
 
 // Buf returns the buffer.
@@ -176,6 +181,7 @@ func (s *NVarStore) Buf() []byte {
 // Used mostly for things interacting with the Firmware interface.
 func (s *NVarStore) SetBuf(buf []byte) {
 	s.buf = buf
+	s.Modified = true
 }
 
 // Apply calls the visitor on the NVarStore.
@@ -441,7 +447,7 @@ func newNVar(buf []byte, offset uint64, s *NVarStore) (*NVar, error) {
 		return nil, nil
 	}
 
-	v := NVar{Type: FullNVarEntry, Offset: offset}
+	v := NVar{Type: FullNVarEntry, Offset: offset, Parsed: true}
 	// read the header and check for existing NVAR
 	if err := v.parseHeader(buf); err != nil {
 		return nil, err
@@ -566,7 +572,7 @@ func (v *NVar) Assemble(content []byte, checkOnly bool) error {
 // NewNVarStore parses a sequence of bytes and returns an NVarStore
 // object, if a valid one is passed, or an error.
 func NewNVarStore(buf []byte) (*NVarStore, error) {
-	s := NVarStore{}
+	s := NVarStore{Parsed: true}
 
 	// Copy out the buffer.
 	s.buf = make([]byte, len(buf))

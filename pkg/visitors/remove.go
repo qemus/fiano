@@ -87,6 +87,7 @@ func (v *Remove) Visit(f uefi.Firmware) error {
 			for _, m := range v.Matches {
 				if f.Files[i] == m {
 					originalList := append([]*uefi.File{}, f.Files...)
+					originalModified := f.Modified
 
 					m := m.(*uefi.File)
 					if v.Pad || m.Header.Type == uefi.FVFileTypePEIM {
@@ -99,12 +100,14 @@ func (v *Remove) Visit(f uefi.Firmware) error {
 					} else {
 						f.Files = append(f.Files[:i], f.Files[i+1:]...)
 					}
+					f.Modified = true
 					v.printf("Remove: %d files now\n", len(f.Files))
 
 					// Creates a stack of undoes in case there are multiple FVs.
 					prev := v.Undo
 					v.Undo = func() {
 						f.Files = originalList
+						f.Modified = originalModified
 						v.printf("Undo: %d files now\n", len(f.Files))
 						v.Undo = prev
 					}

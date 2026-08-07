@@ -102,6 +102,7 @@ func (v *TightenME) process() error {
 	}
 	v.br.Elements = append([]*uefi.TypedFirmware{uefi.MakeTyped(bp)}, v.br.Elements...)
 	// Assemble will regenerate IFD so regions will be updated in the image
+	v.br.Modified = true
 
 	return nil
 }

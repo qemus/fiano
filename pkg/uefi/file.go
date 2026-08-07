@@ -277,6 +277,8 @@ type File struct {
 	buf         []byte
 	ExtractPath string
 	DataOffset  uint64
+	Parsed      bool `json:"-"`
+	Modified    bool `json:"-"`
 }
 
 // Buf returns the buffer.
@@ -289,6 +291,7 @@ func (f *File) Buf() []byte {
 // Used mostly for things interacting with the Firmware interface.
 func (f *File) SetBuf(buf []byte) {
 	f.buf = buf
+	f.Modified = true
 }
 
 // Apply calls the visitor on the File.
@@ -429,7 +432,7 @@ func CreatePadFile(size uint64) (*File, error) {
 // object, if a valid one is passed, or an error. If no error is returned and the File
 // pointer is nil, it means we've reached the volume free space at the end of the FV.
 func NewFile(buf []byte) (*File, error) {
-	f := File{}
+	f := File{Parsed: true}
 	f.DataOffset = FileHeaderMinLength
 	// Read in standard header.
 	r := bytes.NewReader(buf)

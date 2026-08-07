@@ -59,6 +59,8 @@ type BIOSRegion struct {
 	// This is a pointer to the FlashRegion struct laid out in the ifd.
 	FRegion    *FlashRegion
 	RegionType FlashRegionType
+	Parsed     bool `json:"-"`
+	Modified   bool `json:"-"`
 }
 
 // Type returns the flash region type.
@@ -81,7 +83,7 @@ func (br *BIOSRegion) FlashRegion() (fr *FlashRegion) {
 // Region struct uncovered in the ifd.
 func NewBIOSRegion(buf []byte, r *FlashRegion, _ FlashRegionType) (Region, error) {
 	br := BIOSRegion{FRegion: r, Length: uint64(len(buf)),
-		RegionType: RegionTypeBIOS}
+		RegionType: RegionTypeBIOS, Parsed: true}
 	var absOffset uint64
 
 	// Copy the buffer
@@ -137,6 +139,7 @@ func (br *BIOSRegion) Buf() []byte {
 // Used mostly for things interacting with the Firmware interface.
 func (br *BIOSRegion) SetBuf(buf []byte) {
 	br.buf = buf
+	br.Modified = true
 }
 
 // Apply calls the visitor on the BIOSRegion.

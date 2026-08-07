@@ -54,6 +54,7 @@ func (v *NVarInvalidate) Visit(f uefi.Firmware) error {
 	case *uefi.NVar:
 		v.printf("Invalidate: %v  %v\n", f.GUID, f)
 		f.Type = uefi.InvalidNVarEntry
+		f.Modified = true
 	}
 	return nil
 }

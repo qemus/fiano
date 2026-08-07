@@ -5,6 +5,7 @@
 package visitors
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -47,20 +48,54 @@ func (v *ParseDir) readBuf(ExtractPath string) ([]byte, error) {
 	return nil, nil
 }
 
+func validFileChecksums(f *uefi.File) bool {
+	buf := f.Buf()
+	if uint64(len(buf)) < f.HeaderLen() || uint64(len(buf)) < f.DataOffset {
+		return false
+	}
+	if f.ChecksumHeader() != 0 {
+		return false
+	}
+	if f.Header.Attributes.HasChecksum() {
+		return f.Header.Checksum.File+uefi.Checksum8(buf[f.DataOffset:]) == 0
+	}
+	return f.Header.Checksum.File == uefi.EmptyBodyChecksum
+}
+
 // Visit applies the ParseDir visitor to any Firmware type.
 func (v *ParseDir) Visit(f uefi.Firmware) error {
 	var err error
 	var fBuf []byte
+	setBuf := true
 	switch f := f.(type) {
 
 	case *uefi.FirmwareVolume:
 		fBuf, err = v.readBuf(f.ExtractPath)
+		if err == nil && f.Parsed {
+			if f.ExtractPath == "" {
+				setBuf = false
+			} else if len(f.Files) > 0 &&
+				uint64(len(f.Buf())) >= f.DataOffset &&
+				bytes.Equal(f.Buf()[:f.DataOffset], fBuf) {
+				setBuf = false
+			} else if len(f.Files) == 0 && bytes.Equal(f.Buf(), fBuf) {
+				setBuf = false
+			}
+		}
 
 	case *uefi.File:
 		fBuf, err = v.readBuf(f.ExtractPath)
+		if err == nil && f.Parsed && validFileChecksums(f) &&
+			(f.ExtractPath == "" || bytes.Equal(f.Buf(), fBuf)) {
+			setBuf = false
+		}
 
 	case *uefi.Section:
 		fBuf, err = v.readBuf(f.ExtractPath)
+		if err == nil && f.Parsed &&
+			(f.ExtractPath == "" || bytes.Equal(f.Buf(), fBuf)) {
+			setBuf = false
+		}
 
 	case *uefi.NVar:
 		if f.IsValid() {
@@ -90,7 +125,9 @@ func (v *ParseDir) Visit(f uefi.Firmware) error {
 	if err != nil {
 		return err
 	}
-	f.SetBuf(fBuf)
+	if setBuf {
+		f.SetBuf(fBuf)
+	}
 
 	return f.ApplyChildren(v)
 }

@@ -56,6 +56,7 @@ func compactNVarStore(s *uefi.NVarStore) error {
 	// replace entries and GUID store
 	s.Entries = newEntries
 	s.GUIDStore = guidStore
+	s.Modified = true
 
 	// Assemble the tree just to make sure things are right
 	// It will do the mandatory second Assemble of NVar and update the Offsets

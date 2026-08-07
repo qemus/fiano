@@ -205,6 +205,7 @@ func (v *Insert) Run(f uefi.Firmware) error {
 			return fmt.Errorf("matched FV but insert operation was %s, which only matches Files",
 				v.InsertType.String())
 		}
+		fvMatch.Modified = true
 		return nil
 	}
 	var ok bool
@@ -236,6 +237,7 @@ func (v *Insert) Visit(f uefi.Firmware) error {
 				case InsertTypeReplaceFFS:
 					f.Files = append(f.Files[:i], append([]*uefi.File{v.NewFile}, f.Files[i+1:]...)...)
 				}
+				f.Modified = true
 				return nil
 			}
 		}

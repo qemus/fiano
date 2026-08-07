@@ -25,7 +25,8 @@ type Assemble struct {
 	// TODO: figure out if, in the case where the FVs are triply nested, must the FVs further up
 	// also use the FFSV3 GUID? In that case we should fix this since only the innermost
 	// enclosing FV changes to FFSV3
-	useFFS3 bool
+	useFFS3  bool
+	prepared bool
 }
 
 // Run just applies the visitor.
@@ -33,8 +34,94 @@ func (v *Assemble) Run(f uefi.Firmware) error {
 	return f.Apply(v)
 }
 
+func needsAssembly(f uefi.Firmware) bool {
+	switch f := f.(type) {
+	case *uefi.BIOSRegion:
+		return !f.Parsed || f.Modified
+	case *uefi.FirmwareVolume:
+		return !f.Parsed || f.Modified
+	case *uefi.File:
+		return !f.Parsed || f.Modified
+	case *uefi.Section:
+		return !f.Parsed || f.Modified
+	case *uefi.NVarStore:
+		return !f.Parsed || f.Modified
+	case *uefi.NVar:
+		return !f.Parsed || f.Modified
+	default:
+		return true
+	}
+}
+
+// propagateModified marks every ancestor of an object that requires assembly.
+// Objects parsed from an existing binary can otherwise retain their original
+// encoded buffers.
+func propagateModified(f uefi.Firmware) bool {
+	switch f := f.(type) {
+	case *uefi.BIOSRegion:
+		for _, child := range f.Elements {
+			if propagateModified(child.Value) {
+				f.Modified = true
+			}
+		}
+		return needsAssembly(f)
+
+	case *uefi.FirmwareVolume:
+		for _, child := range f.Files {
+			if propagateModified(child) {
+				f.Modified = true
+			}
+		}
+		return needsAssembly(f)
+
+	case *uefi.File:
+		if f.NVarStore != nil {
+			if propagateModified(f.NVarStore) {
+				f.Modified = true
+			}
+		} else {
+			for _, child := range f.Sections {
+				if propagateModified(child) {
+					f.Modified = true
+				}
+			}
+		}
+		return needsAssembly(f)
+
+	case *uefi.Section:
+		for _, child := range f.Encapsulated {
+			if propagateModified(child.Value) {
+				f.Modified = true
+			}
+		}
+		return needsAssembly(f)
+
+	case *uefi.NVarStore:
+		for _, child := range f.Entries {
+			if propagateModified(child) {
+				f.Modified = true
+			}
+		}
+		return needsAssembly(f)
+
+	case *uefi.NVar:
+		if f.NVarStore != nil && propagateModified(f.NVarStore) {
+			f.Modified = true
+		}
+		return needsAssembly(f)
+
+	default:
+		return false
+	}
+}
+
 // Visit applies the Assemble visitor to any Firmware type.
 func (v *Assemble) Visit(f uefi.Firmware) error {
+	if !v.prepared {
+		propagateModified(f)
+		v.prepared = true
+	}
+
 	var err error
 
 	// Get the damn Erase Polarity
@@ -49,6 +136,10 @@ func (v *Assemble) Visit(f uefi.Firmware) error {
 	// Sounds horrible but has to be done =(
 	if err = f.ApplyChildren(v); err != nil {
 		return err
+	}
+
+	if !needsAssembly(f) {
+		return nil
 	}
 
 	switch f := f.(type) {
@@ -78,6 +169,9 @@ func (v *Assemble) Visit(f uefi.Firmware) error {
 		}
 
 		for _, file := range f.Files {
+			if file.Header.Type == uefi.FVFileTypePad && file.Parsed {
+				continue
+			}
 			fileBuf := file.Buf()
 			fileLen := uint64(len(fileBuf))
 			if fileLen == 0 {
@@ -449,7 +543,6 @@ func (v *Assemble) Visit(f uefi.Firmware) error {
 			}
 			if nr != 0 && int(r.Type()) > nr {
 				// Region exceeds original number of regions.
-				// TODO: handle this in some way by increasing the number of regions.
 				continue
 			}
 			if int(r.Type()) >= len(f.IFD.Region.FlashRegions) {

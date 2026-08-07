@@ -211,6 +211,8 @@ type Section struct {
 
 	// Encapsulated firmware
 	Encapsulated []*TypedFirmware `json:",omitempty"`
+	Parsed       bool             `json:"-"`
+	Modified     bool             `json:"-"`
 }
 
 // String returns the String value of the section if it makes sense,
@@ -241,6 +243,7 @@ func (s *Section) Buf() []byte {
 // Used mostly for things interacting with the Firmware interface.
 func (s *Section) SetBuf(buf []byte) {
 	s.buf = buf
+	s.Modified = true
 }
 
 // Apply calls the visitor on the Section.
@@ -344,7 +347,7 @@ func (s *Section) GenSecHeader() error {
 // NewSection parses a sequence of bytes and returns a Section
 // object, if a valid one is passed, or an error.
 func NewSection(buf []byte, fileOrder int) (*Section, error) {
-	s := Section{FileOrder: fileOrder}
+	s := Section{FileOrder: fileOrder, Parsed: true}
 	// Read in standard header.
 	r := bytes.NewReader(buf)
 	if err := binary.Read(r, binary.LittleEndian, &s.Header.SectionHeader); err != nil {

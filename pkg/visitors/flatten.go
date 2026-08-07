@@ -41,20 +41,31 @@ func (v *Flatten) Run(f uefi.Firmware) error {
 	}
 
 	// Remove children otherwise the output contains many duplicates of each node.
-	for _, f := range v.List {
-		switch f := f.Value.(type) {
+	// Work on shallow copies so flatten remains a read-only CLI operation.
+	for i := range v.List {
+		switch f := v.List[i].Value.(type) {
 		case *uefi.BIOSRegion:
-			f.Elements = nil
+			clone := *f
+			clone.Elements = nil
+			v.List[i].Value = &clone
 		case *uefi.File:
-			f.Sections = nil
+			clone := *f
+			clone.Sections = nil
+			v.List[i].Value = &clone
 		case *uefi.FirmwareVolume:
-			f.Files = nil
+			clone := *f
+			clone.Files = nil
+			v.List[i].Value = &clone
 		case *uefi.FlashImage:
+			clone := *f
 			// TODO: Cannot remove IFD
-			// f.IFD = nil
-			f.Regions = nil
+			// clone.IFD = nil
+			clone.Regions = nil
+			v.List[i].Value = &clone
 		case *uefi.Section:
-			f.Encapsulated = nil
+			clone := *f
+			clone.Encapsulated = nil
+			v.List[i].Value = &clone
 		}
 	}
 

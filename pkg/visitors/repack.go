@@ -53,6 +53,7 @@ func removeFileCompression(nfv *uefi.FirmwareVolume) error {
 			}
 		}
 		f.Sections = newSectionList
+		f.Modified = true
 	}
 	return nil
 }
@@ -166,6 +167,7 @@ func repackFV(fv *uefi.FirmwareVolume) error {
 
 	// Set new file as the only firmware file in the original fv.
 	fv.Files = append([]*uefi.File{}, file)
+	fv.Modified = true
 	return nil
 }
 

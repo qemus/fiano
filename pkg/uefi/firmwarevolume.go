@@ -102,6 +102,8 @@ type FirmwareVolume struct {
 	ExtractPath string
 	Resizable   bool   // Determines if this FV is resizable.
 	FreeSpace   uint64 `json:"-"`
+	Parsed      bool   `json:"-"`
+	Modified    bool   `json:"-"`
 }
 
 // Buf returns the buffer.
@@ -114,6 +116,7 @@ func (fv *FirmwareVolume) Buf() []byte {
 // Used mostly for things interacting with the Firmware interface.
 func (fv *FirmwareVolume) SetBuf(buf []byte) {
 	fv.buf = buf
+	fv.Modified = true
 }
 
 // Apply calls the visitor on the FirmwareVolume.
@@ -194,7 +197,7 @@ func FindFirmwareVolumeOffset(data []byte) int64 {
 // NewFirmwareVolume parses a sequence of bytes and returns a FirmwareVolume
 // object, if a valid one is passed, or an error
 func NewFirmwareVolume(data []byte, fvOffset uint64, resizable bool) (*FirmwareVolume, error) {
-	fv := FirmwareVolume{Resizable: resizable}
+	fv := FirmwareVolume{Resizable: resizable, Parsed: true}
 
 	if len(data) < FirmwareVolumeMinSize {
 		return nil, fmt.Errorf("Firmware Volume size too small: expected %v bytes, got %v",

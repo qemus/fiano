@@ -124,6 +124,7 @@ func insertFVinBP(br *uefi.BIOSRegion, offset uint64, bp *uefi.BIOSPadding, idx 
 		newElements = append(newElements, br.Elements[idx+1:]...)
 	}
 	br.Elements = newElements
+	br.Modified = true
 	return nil
 }
 
